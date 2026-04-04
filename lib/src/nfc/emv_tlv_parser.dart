@@ -1,13 +1,23 @@
 import 'dart:typed_data';
 import 'emv_card.dart';
 
+/// Represents an entry in the Application File Locator (AFL).
 class AflEntry {
+  /// Default constructor for [AflEntry].
   const AflEntry({required this.sfi, required this.first, required this.last});
+  
+  /// The Short File Identifier.
   final int sfi;
+  
+  /// The index of the first record in the SFI.
   final int first;
+  
+  /// The index of the last record in the SFI.
   final int last;
 }
 
+/// A utility class for parsing EMV (Europay, Mastercard, and Visa) 
+/// BER-TLV (Basic Encoding Rules - Tag Length Value) data.
 class EmvTlvParser {
   /// Extracts the EmvCard using Regex on the raw hex response to find Track 2 or PAN.
   /// This bypasses the need for a recursive BER-TLV hex byte parser.
@@ -52,6 +62,7 @@ class EmvTlvParser {
     return null;
   }
 
+  /// Finds and returns all occurrences of a TLV [targetTag] within the [data].
   static List<List<int>> findAllTlv(List<int> data, int targetTag) {
     final results = <List<int>>[];
     _collectTlv(data, targetTag, results);
@@ -87,6 +98,7 @@ class EmvTlvParser {
     }
   }
 
+  /// Finds and returns the first occurrence of a TLV [targetTag] within the [data].
   static List<int>? findTlv(List<int> data, int targetTag) {
     int i = 0;
     while (i < data.length) {
@@ -129,11 +141,13 @@ class EmvTlvParser {
     return null;
   }
 
+  /// Converts a list of [bytes] to a hex string.
   static String hex(List<int> bytes) => bytes
       .map((b) => b.toRadixString(16).padLeft(2, '0').toUpperCase())
       .join();
 
-  /// Parses the Application File Locator from a GPO response.
+  /// Parses the Application File Locator (AFL) from a GPO response.
+  /// 
   /// Format 1 (tag 0x80) and Format 2 (TLV tag 0x77) supported.
   static List<AflEntry>? parseAfl(Uint8List gpoResp) {
     final data = gpoResp.sublist(0, gpoResp.length - 2); // strip SW1 SW2

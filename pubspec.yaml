@@ -1,6 +1,6 @@
 name: zap_scan
 description: Flutter scanning package for cards, barcodes, and IATA boarding passes using on-device OCR and EMV NFC.
-version: 1.0.3
+version: 1.1.0
 homepage: https://github.com/devang-singh/zap_scan
 repository: https://github.com/devang-singh/zap_scan
 issue_tracker: https://github.com/devang-singh/zap_scan/issues
@@ -18,7 +18,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  camera: ^0.10.6
+  camera: ^0.11.0
   google_mlkit_commons: ^0.11.1
   nfc_manager: ^4.1.1
 
@@ -34,4 +34,12 @@ flutter:
         package: com.devangsingh.zap_scan
         pluginClass: ZapScanPlugin
       ios:
+        pluginClass: ZapScanPlugin
+      macos:
+        pluginClass: ZapScanPlugin
+      windows:
+        pluginClass: ZapScanPlugin
+      linux:
+        pluginClass: ZapScanPlugin
+      web:
         pluginClass: ZapScanPlugin

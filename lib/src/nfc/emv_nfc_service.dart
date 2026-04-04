@@ -6,7 +6,16 @@ import 'package:nfc_manager/nfc_manager_android.dart';
 import 'emv_card.dart';
 import 'emv_tlv_parser.dart';
 
+/// A service for reading payment card information (EMV) via NFC.
+/// 
+/// This service currently supports Android only and can extract the 
+/// Primary Account Number (PAN) and Expiry Date from contactless 
+/// Visa, Mastercard, Amex, RuPay, and Diners cards.
 class EmvNfcService {
+  /// Starts an NFC session and attempts to read a contactless payment card.
+  /// 
+  /// Throws an [Exception] if NFC is not available or enabled.
+  /// Returns an [EmvCard] with the extracted details, or `null` if no card is found.
   static Future<EmvCard?> scanCard() async {
     final availability = await NfcManager.instance.checkAvailability();
     if (availability != NfcAvailability.enabled) {

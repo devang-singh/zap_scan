@@ -1,8 +1,18 @@
 import 'package:flutter/services.dart';
 
+/// The native bridge class for the `zap_scan` plugin.
+/// 
+/// This class provides static methods to communicate with the native 
+/// (Android/iOS) OCR and Barcode recognition engines.
 class ZapScanPlugin {
   static const MethodChannel _channel = MethodChannel('zap_scan');
 
+  /// Recognizes and extracts text from an image.
+  /// 
+  /// The image can be provided as a [Uint8List] of image bytes or as an [imagePath].
+  /// On mobile, this uses Google ML Kit's Text Recognition.
+  /// 
+  /// Returns the raw recognized text string, or `null` if recognition fails.
   static Future<String?> recognizeText({
     Uint8List? bytes,
     int? width,
@@ -26,6 +36,12 @@ class ZapScanPlugin {
     }
   }
 
+  /// Recognizes and extracts barcodes/QR codes from an image.
+  /// 
+  /// The image can be provided as a [Uint8List] of image bytes or as an [imagePath].
+  /// On mobile, this uses Google ML Kit's Barcode Scanning.
+  /// 
+  /// Returns a list of maps containing the barcode raw value and format details.
   static Future<List<Map<String, dynamic>>?> recognizeBarcode({
     Uint8List? bytes,
     int? width,

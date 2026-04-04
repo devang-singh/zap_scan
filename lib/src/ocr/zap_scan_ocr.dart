@@ -1,9 +1,9 @@
-/// OCR-to-card-number logic
-///
-/// 3 different card layouts:
-///   Horizontal  – "4029 8600 0354 8548"            (all digits on same line)
-///   Grid (2×2)  – "b529 b000 / 0000 L079"          (2 lines × 8 digits)
-///   Vertical    – "4029 / 8L00 / 0354 / 8548"      (4 lines × 4 digits, gaps allowed)
+/// A utility class containing the core logic for extracting card details from OCR text.
+/// 
+/// It supports three main layouts:
+/// * **Horizontal**: All digits on a single line (e.g., "4029 8600 0354 8548").
+/// * **Grid (2×2)**: Digits split across two lines (e.g., 8 digits per line).
+/// * **Vertical**: Digits split across four lines (e.g., 4 digits per line).
 class ZapScanOCR {
   // Raw OCR gives incorrect characters while trying to find correct set of numbers.
   // Following are some examples picked from real samples:
@@ -28,7 +28,10 @@ class ZapScanOCR {
     'B': ['8', '6'],
   };
 
-  /// Returns a valid sequence of 14- to 16-digit possibility-sets, or null if nothing found.
+  /// Parses the [rawText] to find a valid 14- to 16-digit credit card number sequence.
+  /// 
+  /// Returns a list of sets, where each set contains the possible digits for that position.
+  /// Returns `null` if no valid card pattern is found.
   static List<Set<String>>? findCardSlots(String rawText) {
     final lines = rawText
         .split('\n')
@@ -215,8 +218,9 @@ class ZapScanOCR {
   }
 
   /// Attempts to find an expiration date in the raw text.
+  /// 
   /// Looks for patterns like MM/YY, MM\YY, MM|YY, MM-YY, MM/YYYY, etc.
-  /// Also handles common OCR mistakes like `l` or `1` or `7` instead of `/` (e.g., 04126 -> 04/26).
+  /// Also handles common OCR mistakes like `l` or `1` or `7` instead of `/`.
   static String? findExpiryDate(String rawText) {
     // We clean the text to just numbers and likely separators.
     final cleanText = rawText.replaceAll(RegExp(r'[^0-9a-zA-Z\n/\\\-\|\s]'), '');
@@ -272,7 +276,8 @@ class ZapScanOCR {
   }
 
   /// Attempts to find a CVV (3 or 4 digits). 
-  /// Excludes chunks that are identical to segments of the known card number.
+  /// 
+  /// Excludes chunks that are identical to segments of the [knownCardNumber].
   static String? findCvv(String rawText, String? knownCardNumber) {
     final lines = rawText.split('\n');
 

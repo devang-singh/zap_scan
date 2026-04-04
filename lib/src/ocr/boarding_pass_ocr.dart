@@ -1,8 +1,18 @@
 import 'scan_result.dart';
 
+/// A utility class for parsing IATA Barcoded Boarding Passes (BCBP).
+/// 
+/// This class handles the extraction of mandatory fields from the M1-strip 
+/// barcode payload and cross-references them with raw OCR text to extract 
+/// optional fields like boarding time, terminal, and baggage allowance.
 class BoardingPassOCR {
   /// Parses an IATA BCBP barcode string (M1 format) and cross-references 
-  /// with the raw OCR text to extract remaining ambiguous data.
+  /// with the [rawText] to extract detailed flight information.
+  /// 
+  /// The [payload] must be a valid IATA BCBP string (usually starting with 'M1').
+  /// The [format] is the barcode format (e.g., 'PDF417' or 'QR_CODE').
+  /// 
+  /// Returns a [FlightTicketResult] if parsing is successful, or `null` otherwise.
   static FlightTicketResult? parseBoardingPass(String payload, String format, String? rawText) {
     if (!payload.startsWith('M') || payload.length < 58) {
       return null;

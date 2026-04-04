@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:zap_scan/zap_scan.dart';
 
+/// Entry point for the Zap Scan example application.
 void main() => runApp(const MaterialApp(home: ZapScanExample()));
 
+/// A simple example application demonstrating the use of [ZapScanWidget]
+/// and [EmvNfcService] for scanning payment cards and barcodes.
 class ZapScanExample extends StatefulWidget {
+  /// Default constructor for [ZapScanExample].
   const ZapScanExample({super.key});
 
   @override
@@ -58,8 +62,8 @@ class _ZapScanExampleState extends State<ZapScanExample> {
             Expanded(
               child: Stack(
                 children: [
-                  ZapScanWidget(controller: _controller),
-                  Positioned(
+                   ZapScanWidget(controller: _controller),
+                   Positioned(
                     bottom: 20,
                     left: 0,
                     right: 0,

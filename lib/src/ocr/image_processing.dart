@@ -4,6 +4,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:google_mlkit_commons/google_mlkit_commons.dart';
 
+/// Strategies for enhancing camera images before OCR processing.
 enum EnhancementStrategy {
   /// No enhancement — standard fast-path conversion.
   none,
@@ -39,6 +40,8 @@ enum EnhancementStrategy {
   sharpen,
 }
 
+/// A service that applies various computer vision filters to [CameraImage] frames
+/// to improve OCR accuracy for difficult cards (metallic, embossed, low-contrast).
 class ImageProcessing {
   // ── Configuration ──────────────────────────────────────────────────
 
@@ -75,8 +78,9 @@ class ImageProcessing {
   int _frameCount = 0;
 
   /// The enhancement strategy currently being applied.
-  /// Exposed for debug logging in the controller.
   EnhancementStrategy _currentStrategy = EnhancementStrategy.none;
+  
+  /// Returns the current [EnhancementStrategy] being used.
   EnhancementStrategy get currentStrategy => _currentStrategy;
 
   /// Whether excessive glare was detected on the most recent frame.
@@ -104,6 +108,9 @@ class ImageProcessing {
     EnhancementStrategy.localContrast,
   ];
 
+  /// Default constructor for [ImageProcessing].
+  ImageProcessing();
+
   // ── Public API ─────────────────────────────────────────────────────
 
   /// Converts a [CameraImage] to an [InputImage] using the standard (no
@@ -120,8 +127,8 @@ class ImageProcessing {
   /// Converts a [CameraImage] to an [InputImage] for MLKit, optionally
   /// applying image enhancements.
   ///
-  /// When [enableEnhancement] is `false` this is equivalent to the old
-  /// `_toInputImage` — zero copying, zero overhead.
+  /// When [enableEnhancement] is `false` this is equivalent to zero copying, 
+  /// zero overhead conversion.
   Future<InputImage?> process(
     CameraImage image,
     int rotationDeg, {
