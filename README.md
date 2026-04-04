@@ -29,7 +29,7 @@ dependencies:
 ## Setup
 
 ### Android
-Set `minSdkVersion` to **30** in `android/app/build.gradle`.
+Set `minSdkVersion` to **21** in `android/app/build.gradle`.
 
 ### iOS
 Set your iOS Deployment Target to **16.0**.

@@ -1,3 +1,7 @@
+## 1.0.3
+
+*   Lowered Android `minSdkVersion` from 30 to 21.
+
 ## 1.0.2
 
 *   Fixed broken repository and homepage links on pub.dev.

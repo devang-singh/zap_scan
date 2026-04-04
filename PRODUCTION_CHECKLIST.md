@@ -51,7 +51,7 @@ To enable NFC on iOS, you must add the NFC entitlement to your 프로젝트:
 ## 3. Min SDK & Build Settings
 
 ### Android
-Ensure `minSdkVersion` is set to **30** (Android 11) in `android/app/build.gradle`.
+Ensure `minSdkVersion` is set to **21** in `android/app/build.gradle`.
 
 ### iOS
 Ensure `IPHONEOS_DEPLOYMENT_TARGET` is set to **16.0** in your Xcode project settings.
