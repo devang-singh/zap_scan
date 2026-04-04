@@ -1,4 +1,4 @@
-# scapia_card_reader
+# zap_scan
 
 Flutter Plugin for reading card details via **OCR** (Native Vision) or **NFC**.
 
@@ -13,7 +13,7 @@ This library leverages a custom **Headless Native Engine** architecture to minim
 dependencies:
   scapia_card_reader:
     git:
-      url: https://github.com/scapia/card-reader.git
+      url: https://github.com/scapia/zap_scan.git
 ```
 
 ### Android permissions
@@ -46,7 +46,7 @@ The package provides a `CardScannerController` to handle the OCR logic, and a `C
 
 ```dart
 import 'package:flutter/material.dart';
-import 'package:scapia_card_reader/card_reader.dart';
+import 'package:zap_scan/zap_scan.dart';
 
 class MyCardScanner extends StatefulWidget {
   @override
@@ -101,7 +101,7 @@ class _MyCardScannerState extends State<MyCardScanner> {
 NFC scanning is fully headless. You can trigger it from any button tap and build your own "Ready to scan" dialog on Android. On iOS, the system automatically shows the scanning bottom sheet.
 
 ```dart
-import 'package:scapia_card_reader/card_reader.dart';
+import 'package:zap_scan/zap_scan.dart';
 
 Future<void> startNfc() async {
   try {
