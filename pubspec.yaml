@@ -1,8 +1,15 @@
 name: zap_scan
 description: High-precision Flutter scanning engine for credit cards, barcodes, and IATA boarding passes using on-device OCR and EMV NFC.
-version: 1.0.0
-homepage: https://github.com/scapia/zap-scan
-repository: https://github.com/scapia/zap-scan
+version: 1.0.1
+homepage: https://github.com/devang-singh/zap-scan
+repository: https://github.com/devang-singh/zap-scan
+issue_tracker: https://github.com/devang-singh/zap-scan/issues
+topics:
+  - scanner
+  - ocr
+  - nfc
+  - card
+  - barcode
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -24,7 +31,7 @@ flutter:
   plugin:
     platforms:
       android:
-        package: com.scapia.zap_scan
+        package: com.devangsingh.zap_scan
         pluginClass: ZapScanPlugin
       ios:
         pluginClass: ZapScanPlugin

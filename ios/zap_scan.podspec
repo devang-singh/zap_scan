@@ -11,7 +11,7 @@ A high-precision scanning engine for Flutter that extracts complex data from cre
                        DESC
   s.homepage         = 'https://github.com/scapia/zap-scan'
   s.license          = { :file => '../LICENSE' }
-  s.author           = { 'Scapia' => 'contact@scapia.com' }
+  s.author           = { 'Devang Singh' => 'devangsingh665@gmail.com' }
   s.source           = { :path => '.' }
   s.source_files = 'Classes/**/*'
   s.dependency 'Flutter'

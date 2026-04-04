@@ -1,4 +1,4 @@
-package com.scapia.zap_scan
+package com.devangsingh.zap_scan
 
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
