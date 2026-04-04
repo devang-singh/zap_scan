@@ -1,7 +1,7 @@
 import 'package:flutter/services.dart';
 
-class CardReaderPlugin {
-  static const MethodChannel _channel = MethodChannel('card_reader_plugin');
+class ZapScanPlugin {
+  static const MethodChannel _channel = MethodChannel('zap_scan');
 
   static Future<String?> recognizeText({
     Uint8List? bytes,

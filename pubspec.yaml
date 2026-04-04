@@ -1,8 +1,8 @@
-name: card_reader
+name: zap_scan
 description: >-
-  Flutter package for reading cards via OCR and NFC
+  Flutter package for reading cards, barcodes and boarding passes via OCR and NFC
 version: 1.0.0
-homepage: https://github.com/scapia/card-reader
+homepage: https://github.com/scapia/zap-scan
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -24,7 +24,7 @@ flutter:
   plugin:
     platforms:
       android:
-        package: com.scapia.card_reader_plugin
-        pluginClass: CardReaderPlugin
+        package: com.scapia.zap_scan
+        pluginClass: ZapScanPlugin
       ios:
-        pluginClass: CardReaderPlugin
+        pluginClass: ZapScanPlugin

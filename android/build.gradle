@@ -1,5 +1,5 @@
-group = "com.scapia.card_reader_plugin"
-version = "1.0-SNAPSHOT"
+group = "com.scapia.zap_scan"
+version = "1.0.0"
 
 buildscript {
     ext.kotlin_version = "2.1.0"
@@ -25,7 +25,7 @@ apply plugin: "com.android.library"
 apply plugin: "kotlin-android"
 
 android {
-    namespace = "com.scapia.card_reader_plugin"
+    namespace = "com.scapia.zap_scan"
 
     compileSdk = 36
 
@@ -44,7 +44,7 @@ android {
     }
 
     defaultConfig {
-        minSdk = 24
+        minSdk = 30
     }
 
     dependencies {

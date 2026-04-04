@@ -1,4 +1,4 @@
-package com.scapia.card_reader_plugin
+package com.scapia.zap_scan
 
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
@@ -14,20 +14,16 @@ import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.common.Barcode
 import java.io.File
 
-/** CardReaderPlugin */
-class CardReaderPlugin :
+/** ZapScanPlugin */
+class ZapScanPlugin :
     FlutterPlugin,
     MethodCallHandler {
-    // The MethodChannel that will the communication between Flutter and native Android
-    //
-    // This local reference serves to register the plugin with the Flutter Engine and unregister it
-    // when the Flutter Engine is detached from the Activity
     private lateinit var channel: MethodChannel
     private lateinit var context: Context
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         context = flutterPluginBinding.applicationContext
-        channel = MethodChannel(flutterPluginBinding.binaryMessenger, "card_reader_plugin")
+        channel = MethodChannel(flutterPluginBinding.binaryMessenger, "zap_scan")
         channel.setMethodCallHandler(this)
     }
 

@@ -11,6 +11,6 @@ class EmvCard {
 
   @override
   String toString() {
-    return 'EmvCard(cardNumber: $cardNumber, expiryDate: $expiryDate)';
+    return 'ZapCard(cardNumber: $cardNumber, expiryDate: $expiryDate)';
   }
 }

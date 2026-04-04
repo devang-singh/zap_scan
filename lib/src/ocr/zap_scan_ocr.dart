@@ -4,7 +4,7 @@
 ///   Horizontal  – "4029 8600 0354 8548"            (all digits on same line)
 ///   Grid (2×2)  – "b529 b000 / 0000 L079"          (2 lines × 8 digits)
 ///   Vertical    – "4029 / 8L00 / 0354 / 8548"      (4 lines × 4 digits, gaps allowed)
-class CardScannerOCR {
+class ZapScanOCR {
   // Raw OCR gives incorrect characters while trying to find correct set of numbers.
   // Following are some examples picked from real samples:
   static const _fixed = <String, String>{

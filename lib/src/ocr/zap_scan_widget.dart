@@ -2,14 +2,14 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'universal_scanner_controller.dart';
 
-class CardScannerWidget extends StatefulWidget {
+class ZapScanWidget extends StatefulWidget {
   final UniversalScannerController controller;
   final Widget loader;
 
   final double? width;
   final double? height;
 
-  const CardScannerWidget({
+  const ZapScanWidget({
     super.key,
     required this.controller,
     this.loader = const SizedBox.shrink(),
@@ -18,10 +18,10 @@ class CardScannerWidget extends StatefulWidget {
   });
 
   @override
-  State<CardScannerWidget> createState() => _CardScannerWidgetState();
+  State<ZapScanWidget> createState() => _ZapScanWidgetState();
 }
 
-class _CardScannerWidgetState extends State<CardScannerWidget> with WidgetsBindingObserver {
+class _ZapScanWidgetState extends State<ZapScanWidget> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();

@@ -2,10 +2,10 @@ import Flutter
 import UIKit
 import Vision
 
-public class CardReaderPlugin: NSObject, FlutterPlugin {
+public class ZapScanPlugin: NSObject, FlutterPlugin {
   public static func register(with registrar: FlutterPluginRegistrar) {
-    let channel = FlutterMethodChannel(name: "card_reader_plugin", binaryMessenger: registrar.messenger())
-    let instance = CardReaderPlugin()
+    let channel = FlutterMethodChannel(name: "zap_scan", binaryMessenger: registrar.messenger())
+    let instance = ZapScanPlugin()
     registrar.addMethodCallDelegate(instance, channel: channel)
   }
 

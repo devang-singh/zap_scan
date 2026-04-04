@@ -1,137 +1,95 @@
-# zap_scan
+# Zap Scan ⚡
 
-Flutter Plugin for reading card details via **OCR** (Native Vision) or **NFC**.
+[![Pub Version](https://img.shields.io/pub/v/zap_scan?color=blue)](https://pub.dev/packages/zap_scan)
+[![License: MIT](https://img.shields.io/badge/License-MIT-purple.svg)](https://opensource.org/licenses/MIT)
 
-### Architecture Overview
-This library leverages a custom **Headless Native Engine** architecture to minimize app size and maximize scanning performance without overriding your Flutter UI elements:
-- **Android**: Uses Play Services Unbundled ML Kit (0 MB footprint in your APK since it calls OS-level modules).
-- **iOS**: Uses the built-in Apple `Vision` Framework (no external dependencies).
-- **Dart**: Manages camera streams and applies battle-tested regex to piece together vertically stacked or embossed horizontal cards based on text layout.
+**Zap Scan** is a package for Flutter that extracts data from cards, barcodes, and boarding passes. It leverages native, on-device OCR and EMV NFC to provide a "bulletproof" scanning experience.
+
+![Zap Scan Mockup](docs/assets/card_scanner.png)
+
+## Features
+
+- 🃏 **Card Scanning**: Robust OCR for 14- to 16-digit payment cards. Handles horizontal, grid (2×2), and vertical layouts.
+- 🌫️ **Image Enhancement**: Specialized strategies (Sobel, Otsu, CLAHE) to handle glare, low light, and metallic/embossed cards.
+- 🛫 **Boarding Pass Parsing**: Full IATA BCBP support to extract PNR, Seat, Flight Number, and more.
+- 💳 **EMV NFC**: Contactless card reading (PAN & Expiry) for Visa, Mastercard, Amex, RuPay, and Diners.
+- 📊 **Stability Consensus**: Built-in "consensus mechanism" that requires multiple identical frames before confirming a result, preventing "fluttery" OCR misreads.
+
+![Boarding Pass Mockup](docs/assets/boarding_pass.png)
+
 ## Installation
+
+Add `zap_scan` to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  scapia_card_reader:
-    git:
-      url: https://github.com/scapia/zap_scan.git
+  zap_scan: ^1.0.0
 ```
 
-### Android permissions
+## Setup
 
-`android/app/src/main/AndroidManifest.xml`:
+### Android
+Set `minSdkVersion` to **30** in `android/app/build.gradle`.
 
-```xml
-<uses-permission android:name="android.permission.CAMERA" />
-<uses-permission android:name="android.permission.NFC" />
-```
+### iOS
+Set your iOS Deployment Target to **16.0**.
 
-### iOS permissions
-
-`ios/Runner/Info.plist`:
-
-```xml
-<key>NSCameraUsageDescription</key>
-<string>Camera is used to scan your card number.</string>
-```
-
-> NFC EMV card reading capabilities depend on OS support.
-
----
+> [!NOTE]
+> Review the [PRODUCTION_CHECKLIST.md](PRODUCTION_CHECKLIST.md) for a complete list of required permissions and configurations.
 
 ## Usage
 
-### 1. Camera OCR
+### Camera-based Scanning (OCR & Barcodes)
 
-The package provides a `CardScannerController` to handle the OCR logic, and a `CardScannerWidget` to render the camera preview. You can place this widget anywhere in your app and draw your own UI (buttons, text) over it.
-
-```dart
-import 'package:flutter/material.dart';
-import 'package:zap_scan/zap_scan.dart';
-
-class MyCardScanner extends StatefulWidget {
-  @override
-  State<MyCardScanner> createState() => _MyCardScannerState();
-}
-
-class _MyCardScannerState extends State<MyCardScanner> {
-  late final CardScannerController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = CardScannerController(
-      scanExpiryDate: true,  // Optional: Extrapolate expiry date (Best effort)
-      scanCvv: true,         // Optional: Extrapolate CVV (Best effort)
-      onCardDetailsScanned: (CardDetails details) {
-        print("Card: ${details.cardNumber}");
-        print("Expiry: ${details.expiryDate}");
-        print("CVV: ${details.cvv}");
-      },
-    );
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("Scan Card"),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.flash_on),
-            onPressed: () => _controller.toggleTorch(),
-          )
-        ],
-      ),
-      body: CardScannerWidget(
-        controller: _controller,
-      ),
-    );
-  }
-}
-```
-
-### 2. NFC Only (Headless)
-
-NFC scanning is fully headless. You can trigger it from any button tap and build your own "Ready to scan" dialog on Android. On iOS, the system automatically shows the scanning bottom sheet.
+The `ZapScanWidget` provides the camera preview, while the `UniversalScannerController` manages the detection logic.
 
 ```dart
 import 'package:zap_scan/zap_scan.dart';
 
-Future<void> startNfc() async {
-  try {
-    // Show your own UI asking the user to tap the card
-    final EmvCard? card = await EmvNfcService.scanCard();
-    if (card != null) {
-      print("NFC Card: ${card.cardNumber}, Expiry: ${card.expiryDate}");
+// 1. Initialize the controller
+final controller = UniversalScannerController(
+  onResultScanned: (result) {
+    if (result is ZapCardResult) {
+      print('Card Number: ${result.cardNumber}');
+    } else if (result is FlightTicketResult) {
+       print('Flight: ${result.flightNumber} via ${result.pnr}');
     }
-  } catch (e) {
-    print("NFC Error: $e");
-  }
+  },
+);
+
+// 2. Add the widget to your build
+@override
+Widget build(BuildContext context) {
+  return Scaffold(
+    body: ZapScanWidget(
+      controller: controller,
+      loader: CircularProgressIndicator(),
+    ),
+  );
 }
 ```
 
-### 3. Headless OCR parser (No camera UI)
+### NFC Card Reading
+
+NFC is handled via the static `EmvNfcService`.
 
 ```dart
-final slots = CardScannerOCR.findCardSlots(rawOcrText);
-// slots is a List<Set<String>>? — each position holds the possible digits.
+import 'package:zap_scan/zap_scan.dart';
+
+try {
+  final card = await EmvNfcService.scanCard();
+  if (card != null) {
+    print('NFC Card: ${card.cardNumber}');
+  }
+} catch (e) {
+  print('NFC Error: $e');
+}
 ```
 
----
+## Advanced Logic: Embossed & Metallic Cards
 
-## Public API
+Zap Scan is unique for its **Strategy Rotation**. If a card isn't detected within a few frames, the engine automatically cycles through image enhancement filters (e.g., inverting colors, sharpening edges, or local contrast amplification). This is particularly effective for "silver-on-silver" embossed cards that traditional OCR often fails to pick up.
 
-| Symbol | Description |
-|--------|-------------|
-| `CardScannerController` | Manages camera lifecycle, torch, and OCR frame consensus |
-| `CardScannerWidget` | Renders the camera preview bound to the controller |
-| `EmvNfcService` | Headless NFC EMV reader service |
-| `EmvCard` | Result model `{cardNumber, expiryDate}` |
-| `EmvTlvParser` | EMV TLV parsing utilities for internal or advanced usage |
-| `CardScannerOCR` | Pure OCR parser — no Flutter/camera dependencies |
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

@@ -80,8 +80,7 @@ class EmvNfcService {
       );
     }
     for (final known in _knownAids) {
-      if (!aidsToTry
-          .any((a) => EmvTlvParser.hex(a) == EmvTlvParser.hex(known))) {
+      if (!aidsToTry.any((a) => EmvTlvParser.hex(a) == EmvTlvParser.hex(known))) {
         aidsToTry.add(known);
       }
     }
@@ -95,8 +94,7 @@ class EmvNfcService {
     return null;
   }
 
-  static Future<EmvCard?> _tryAid(
-      IsoDepAndroid isoDep, List<int> aidBytes) async {
+  static Future<EmvCard?> _tryAid(IsoDepAndroid isoDep, List<int> aidBytes) async {
     // SELECT AID
     Uint8List resp;
     try {
@@ -169,8 +167,7 @@ class EmvNfcService {
           Uint8List.fromList([0x00, 0xB2, rec, (sfi << 3) | 4, 0x00]),
         );
       } on PlatformException catch (e) {
-        if (e.message?.contains('out of date') == true ||
-            e.message?.contains('SecurityException') == true) {
+        if (e.message?.contains('out of date') == true || e.message?.contains('SecurityException') == true) {
           break; // card moved — stop trying this AID
         }
         continue;
@@ -190,8 +187,7 @@ class EmvNfcService {
       }
       // Tag 57 / 9F6B — Track 2 Equivalent Data
       if (pan == null) {
-        final t2 = EmvTlvParser.findTlv(recData, 0x57) ??
-            EmvTlvParser.findTlv(recData, 0x9F6B);
+        final t2 = EmvTlvParser.findTlv(recData, 0x57) ?? EmvTlvParser.findTlv(recData, 0x9F6B);
         if (t2 != null) {
           final t2hex = EmvTlvParser.hex(t2).toLowerCase();
           final sep = t2hex.indexOf('d');
@@ -233,16 +229,7 @@ class EmvNfcService {
       0x95: [0x00, 0x00, 0x00, 0x00, 0x00], // TVR
       0x9F34: [0x1F, 0x00, 0x02], // CVM results
       0x9F45: [0x00, 0x00], // Data auth code
-      0x9F4C: [
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00
-      ], // ICC dyn number
+      0x9F4C: [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // ICC dyn number
     };
 
     final data = <int>[];
@@ -270,10 +257,7 @@ class EmvNfcService {
   static Uint8List _patchTtq(Uint8List gpoCmd, int newFirstByte) {
     final patched = Uint8List.fromList(gpoCmd);
     for (int i = 0; i < patched.length - 3; i++) {
-      if (patched[i] == 0x27 &&
-          patched[i + 1] == 0x00 &&
-          patched[i + 2] == 0x00 &&
-          patched[i + 3] == 0x00) {
+      if (patched[i] == 0x27 && patched[i + 1] == 0x00 && patched[i + 2] == 0x00 && patched[i + 3] == 0x00) {
         patched[i] = newFirstByte;
         break;
       }
@@ -281,8 +265,7 @@ class EmvNfcService {
     return patched;
   }
 
-  static bool _swOk(Uint8List r) =>
-      r.length >= 2 && r[r.length - 2] == 0x90 && r[r.length - 1] == 0x00;
+  static bool _swOk(Uint8List r) => r.length >= 2 && r[r.length - 2] == 0x90 && r[r.length - 1] == 0x00;
 
   static const _knownAids = [
     [0xA0, 0x00, 0x00, 0x00, 0x03, 0x10, 0x10], // Visa payWave

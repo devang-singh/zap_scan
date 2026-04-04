@@ -3,12 +3,12 @@ abstract class ScanResult {
   const ScanResult({this.rawText});
 }
 
-class CreditCardResult extends ScanResult {
+class ZapCardResult extends ScanResult {
   final String cardNumber;
   final String? expiryDate;
   final String? cvv;
 
-  const CreditCardResult({
+  const ZapCardResult({
     required this.cardNumber,
     this.expiryDate,
     this.cvv,
@@ -17,7 +17,7 @@ class CreditCardResult extends ScanResult {
 
   @override
   String toString() {
-    return 'CreditCardResult(cardNumber: $cardNumber, expiryDate: $expiryDate, cvv: $cvv, rawText: $rawText)';
+    return 'ZapCardResult(cardNumber: $cardNumber, expiryDate: $expiryDate, cvv: $cvv, rawText: $rawText)';
   }
 }
 

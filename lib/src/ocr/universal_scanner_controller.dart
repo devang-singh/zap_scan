@@ -4,9 +4,9 @@ import 'package:camera/camera.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mlkit_commons/google_mlkit_commons.dart';
-import 'card_scanner_ocr.dart';
+import 'zap_scan_ocr.dart';
 import 'image_processing.dart';
-import 'card_reader_plugin.dart';
+import 'zap_scan_plugin.dart';
 import 'scan_result.dart';
 import 'boarding_pass_ocr.dart';
 
@@ -19,9 +19,10 @@ class UniversalScannerController extends ChangeNotifier {
   final ImageProcessing _enhancerService = ImageProcessing();
 
   bool enableImageEnhancement = false;
-  
+
   /// Whether to attempt scanning cards
   bool scanCards = true;
+
   /// Whether to attempt scanning barcodes/QR codes
   bool scanBarcodes = true;
 
@@ -163,14 +164,14 @@ class UniversalScannerController extends ChangeNotifier {
   Future<ScanResult?> scanFromImage(File imageFile) async {
     // 1. Try Barcodes first
     if (scanBarcodes) {
-      final barcodeResults = await CardReaderPlugin.recognizeBarcode(imagePath: imageFile.path);
+      final barcodeResults = await ZapScanPlugin.recognizeBarcode(imagePath: imageFile.path);
       if (barcodeResults != null && barcodeResults.isNotEmpty) {
         final payload = barcodeResults.first['rawValue'] as String?;
         final format = barcodeResults.first['format'] as String? ?? "UNKNOWN";
         if (payload != null) {
           String? rawText;
           if (scanCards) {
-             rawText = await CardReaderPlugin.recognizeText(imagePath: imageFile.path);
+            rawText = await ZapScanPlugin.recognizeText(imagePath: imageFile.path);
           }
           if (payload.startsWith("M1") && payload.length > 20) {
             final bpResult = BoardingPassOCR.parseBoardingPass(payload, format, rawText);
@@ -183,21 +184,24 @@ class UniversalScannerController extends ChangeNotifier {
 
     // 2. Try Cards/OCR Text
     if (scanCards) {
-      final text = await CardReaderPlugin.recognizeText(imagePath: imageFile.path);
+      final text = await ZapScanPlugin.recognizeText(imagePath: imageFile.path);
       if (text == null) return null;
-      var cardSlots = CardScannerOCR.findCardSlots(text);
+      var cardSlots = ZapScanOCR.findCardSlots(text);
       if (cardSlots == null) {
         final reversed = text.split('\n').reversed.join('\n');
-        cardSlots = CardScannerOCR.findCardSlots(reversed);
+        cardSlots = ZapScanOCR.findCardSlots(reversed);
       }
       if (cardSlots != null) {
         final tempCardNum = cardSlots.map((s) => s.first).join();
         String? expiry;
         String? cvv;
-        if (scanExpiryDate) expiry = CardScannerOCR.findExpiryDate(text);
-        if (scanCvv) cvv = CardScannerOCR.findCvv(text, tempCardNum);
-        return CreditCardResult(
-          cardNumber: tempCardNum, expiryDate: expiry, cvv: cvv, rawText: text,
+        if (scanExpiryDate) expiry = ZapScanOCR.findExpiryDate(text);
+        if (scanCvv) cvv = ZapScanOCR.findCvv(text, tempCardNum);
+        return ZapCardResult(
+          cardNumber: tempCardNum,
+          expiryDate: expiry,
+          cvv: cvv,
+          rawText: text,
         );
       }
     }
@@ -236,7 +240,7 @@ class UniversalScannerController extends ChangeNotifier {
 
       // 1. BARCODE SCANNING
       if (scanBarcodes) {
-        final barcodeResults = await CardReaderPlugin.recognizeBarcode(
+        final barcodeResults = await ZapScanPlugin.recognizeBarcode(
           bytes: inputImage.bytes!,
           width: inputImage.metadata!.size.width.toInt(),
           height: inputImage.metadata!.size.height.toInt(),
@@ -254,20 +258,20 @@ class UniversalScannerController extends ChangeNotifier {
             _resetBarcodeConsensus();
           }
         } else {
-            _resetBarcodeConsensus();
+          _resetBarcodeConsensus();
         }
       }
 
       // 2. TEXT/CARD OCR SCANNING
       if (scanCards) {
-        final textResult = await CardReaderPlugin.recognizeText(
+        final textResult = await ZapScanPlugin.recognizeText(
           bytes: inputImage.bytes!,
           width: inputImage.metadata!.size.width.toInt(),
           height: inputImage.metadata!.size.height.toInt(),
           rotation: inputImage.metadata!.rotation.rawValue,
           format: inputImage.metadata!.format.rawValue,
         );
-        
+
         if (textResult == null) return;
         var filteredText = textResult;
 
@@ -279,14 +283,14 @@ class UniversalScannerController extends ChangeNotifier {
         dump.add('=== text ===');
         dump.add(filteredText.isEmpty ? '(empty)' : filteredText);
 
-        var cardSlots = CardScannerOCR.findCardSlots(filteredText);
+        var cardSlots = ZapScanOCR.findCardSlots(filteredText);
 
         // Retry with 180° rotation in case the card is held upside down.
         if (cardSlots == null) {
           final rotDeg180 = (rotDeg + 180) % 360;
           final inputImage180 = _enhancerService.convertStandard(image, rotDeg180);
           if (inputImage180 != null && inputImage180.bytes != null) {
-            final textResult180 = await CardReaderPlugin.recognizeText(
+            final textResult180 = await ZapScanPlugin.recognizeText(
               bytes: inputImage180.bytes!,
               width: inputImage180.metadata!.size.width.toInt(),
               height: inputImage180.metadata!.size.height.toInt(),
@@ -301,7 +305,7 @@ class UniversalScannerController extends ChangeNotifier {
                 flippedText,
               ];
               for (final candidate in candidates) {
-                final slots = CardScannerOCR.findCardSlots(candidate);
+                final slots = ZapScanOCR.findCardSlots(candidate);
                 if (slots != null) {
                   cardSlots = slots;
                   filteredText = candidate;
@@ -323,8 +327,8 @@ class UniversalScannerController extends ChangeNotifier {
           String? cvv;
           if (cardSlots != null) {
             final tempCardNum = cardSlots.map((s) => s.first).join();
-            if (scanExpiryDate) expiry = CardScannerOCR.findExpiryDate(filteredText);
-            if (scanCvv) cvv = CardScannerOCR.findCvv(filteredText, tempCardNum);
+            if (scanExpiryDate) expiry = ZapScanOCR.findExpiryDate(filteredText);
+            if (scanCvv) cvv = ZapScanOCR.findCvv(filteredText, tempCardNum);
           }
           _intersectCardConsensus(cardSlots, expiry, cvv);
         }
@@ -337,41 +341,41 @@ class UniversalScannerController extends ChangeNotifier {
   }
 
   void _resetBarcodeConsensus() {
-      _lastBarcodePayload = null;
-      _barcodeConsensusFrames = 0;
+    _lastBarcodePayload = null;
+    _barcodeConsensusFrames = 0;
   }
 
   void _intersectBarcodeConsensus(String payload, String format) {
-      if (_lastBarcodePayload == payload) {
-          _barcodeConsensusFrames++;
-      } else {
-          _lastBarcodePayload = payload;
-          _barcodeConsensusFrames = 1;
-      }
+    if (_lastBarcodePayload == payload) {
+      _barcodeConsensusFrames++;
+    } else {
+      _lastBarcodePayload = payload;
+      _barcodeConsensusFrames = 1;
+    }
 
-      // Barcodes only need 2 frames to confirm stability
-      if (_barcodeConsensusFrames >= 2) {
-          // Identify IATA BCBP (Boarding Passes usually start with M1)
-          if (payload.startsWith("M1") && payload.length > 20) {
-              final bpResult = BoardingPassOCR.parseBoardingPass(payload, format, _rawText);
-              if (bpResult != null) {
-                  _finalConfirmedResult = bpResult;
-              } else {
-                  _finalConfirmedResult = BarcodeResult(
-                      payload: payload,
-                      format: format,
-                      rawText: _rawText,
-                  );
-              }
-          } else {
-              _finalConfirmedResult = BarcodeResult(
-                  payload: payload,
-                  format: format,
-                  rawText: _rawText,
-              );
-          }
-          onResultScanned?.call(_finalConfirmedResult!);
+    // Barcodes only need 2 frames to confirm stability
+    if (_barcodeConsensusFrames >= 2) {
+      // Identify IATA BCBP (Boarding Passes usually start with M1)
+      if (payload.startsWith("M1") && payload.length > 20) {
+        final bpResult = BoardingPassOCR.parseBoardingPass(payload, format, _rawText);
+        if (bpResult != null) {
+          _finalConfirmedResult = bpResult;
+        } else {
+          _finalConfirmedResult = BarcodeResult(
+            payload: payload,
+            format: format,
+            rawText: _rawText,
+          );
+        }
+      } else {
+        _finalConfirmedResult = BarcodeResult(
+          payload: payload,
+          format: format,
+          rawText: _rawText,
+        );
       }
+      onResultScanned?.call(_finalConfirmedResult!);
+    }
   }
 
   void _intersectCardConsensus(List<Set<String>>? newSlots, String? newExpiry, String? newCvv) {
@@ -407,8 +411,8 @@ class UniversalScannerController extends ChangeNotifier {
 
       if (_consensusFrames >= _requiredConsensus) {
         final confirmedCardStr = _probableCard!;
-        
-        _finalConfirmedResult = CreditCardResult(
+
+        _finalConfirmedResult = ZapCardResult(
           cardNumber: confirmedCardStr,
           expiryDate: _probableExpiry,
           cvv: _probableCvv,
@@ -427,7 +431,7 @@ class UniversalScannerController extends ChangeNotifier {
   void _updateProbableCard() {
     if (_consensusSlots == null) return;
     _probableCard = _consensusSlots!.map((s) => s.first).join();
-    
+
     if (_expiryVotes.isNotEmpty) {
       _probableExpiry = _expiryVotes.entries.reduce((a, b) => a.value > b.value ? a : b).key;
     }
