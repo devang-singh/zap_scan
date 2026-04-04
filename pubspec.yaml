@@ -1,0 +1,30 @@
+name: card_reader
+description: >-
+  Flutter package for reading cards via OCR and NFC
+version: 1.0.0
+homepage: https://github.com/scapia/card-reader
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.10.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  camera: ^0.10.6
+  google_mlkit_commons: ^0.11.1
+  nfc_manager: ^4.1.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.scapia.card_reader_plugin
+        pluginClass: CardReaderPlugin
+      ios:
+        pluginClass: CardReaderPlugin
