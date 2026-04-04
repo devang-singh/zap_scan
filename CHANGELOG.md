@@ -1,3 +1,7 @@
+## 1.0.2
+
+*   Fixed broken repository and homepage links on pub.dev.
+
 ## 1.0.1
 
 *   Renamed package internal identifiers.
