@@ -1,3 +1,6 @@
+## 1.1.2
+* Improve OCR accuracy for image upload flow
+
 ## 1.1.1
 
 *   **WASM Compatibility**: Removed all direct `dart:io` usage and replaced them with `defaultTargetPlatform` to support the new Dart WASM compiler on the Web.
