@@ -153,6 +153,54 @@ class ImageProcessing {
     return _enhancedConversion(image, rotationDeg, strategy, roi: roi);
   }
 
+  /// Low-level entry point to apply a specific [EnhancementStrategy] to raw
+  /// luminance bytes (e.g. from an uploaded file).
+  ///
+  /// The [bytes] must be a grayscale buffer of [width] * [height].
+  void processLuminance(Uint8List bytes, int width, int height, EnhancementStrategy strategy) {
+    switch (strategy) {
+      case EnhancementStrategy.grayscaleHiContrast:
+        _applyGrayscaleHiContrast(bytes, width, height, true); // Treat as NV21 for Y-only
+        break;
+      case EnhancementStrategy.sharpen:
+        _applySharpening(bytes, width, height, true);
+        break;
+      case EnhancementStrategy.sobelEdge:
+        _applySobelEdge(bytes, width, height, true);
+        break;
+      case EnhancementStrategy.localContrast:
+        _applyLocalContrast(bytes, width, height, true);
+        break;
+      case EnhancementStrategy.histogramEqualization:
+        _applyHistogramEqualization(bytes, width, height, true);
+        break;
+      case EnhancementStrategy.binaryThreshold:
+        _applyOtsuThreshold(bytes, width, height, true);
+        break;
+      case EnhancementStrategy.adaptiveThreshold:
+        _applyAdaptiveThreshold(bytes, width, height, true);
+        break;
+      case EnhancementStrategy.inversion:
+        _applyInversion(bytes, width * height, true);
+        break;
+      case EnhancementStrategy.none:
+        break;
+    }
+  }
+
+  /// Rotates a grayscale luminance buffer 180 degrees in-place.
+  void rotateLuminance180(Uint8List bytes, int width, int height) {
+    int i = 0;
+    int j = bytes.length - 1;
+    while (i < j) {
+      final temp = bytes[i];
+      bytes[i] = bytes[j];
+      bytes[j] = temp;
+      i++;
+      j--;
+    }
+  }
+
   // ── Conversion paths ───────────────────────────────────────────────
 
   /// Fast path — no byte copying, no processing.
@@ -366,7 +414,7 @@ class ImageProcessing {
       // BGRA8888: compute luminance from RGB.
       for (int i = 0; i < pixelCount; i += _glareSampleStride) {
         final o = i * 4;
-        final gray = _luminance(bytes[o + 2], bytes[o + 1], bytes[o]);
+        final gray = luminance(bytes[o + 2], bytes[o + 1], bytes[o]);
         if (gray > _glarePixelValue) overexposed++;
         sampled++;
       }
@@ -464,7 +512,7 @@ class ImageProcessing {
     } else {
       for (int i = 0; i < pixelCount; i++) {
         final o = i * 4;
-        lum[i] = _luminance(bytes[o + 2], bytes[o + 1], bytes[o]);
+        lum[i] = luminance(bytes[o + 2], bytes[o + 1], bytes[o]);
       }
     }
     return lum;
@@ -612,7 +660,7 @@ class ImageProcessing {
     } else {
       for (int i = 0; i < pixelCount; i++) {
         final o = i * 4;
-        lum[i] = _luminance(bytes[o + 2], bytes[o + 1], bytes[o]);
+        lum[i] = luminance(bytes[o + 2], bytes[o + 1], bytes[o]);
       }
     }
 
@@ -686,7 +734,7 @@ class ImageProcessing {
             histogram[bytes[idx]]++;
           } else {
             final o = idx * 4;
-            histogram[_luminance(bytes[o + 2], bytes[o + 1], bytes[o])]++;
+            histogram[luminance(bytes[o + 2], bytes[o + 1], bytes[o])]++;
           }
         }
       }
@@ -699,7 +747,7 @@ class ImageProcessing {
       } else {
         for (int i = 0; i < pixelCount; i++) {
           final o = i * 4;
-          histogram[_luminance(bytes[o + 2], bytes[o + 1], bytes[o])]++;
+          histogram[luminance(bytes[o + 2], bytes[o + 1], bytes[o])]++;
         }
       }
     }
@@ -715,7 +763,7 @@ class ImageProcessing {
     } else {
       for (int i = 0; i < pixelCount; i++) {
         final o = i * 4;
-        final gray = _luminance(bytes[o + 2], bytes[o + 1], bytes[o]);
+        final gray = luminance(bytes[o + 2], bytes[o + 1], bytes[o]);
         final eq = lut[gray];
         bytes[o] = eq;
         bytes[o + 1] = eq;
@@ -733,7 +781,7 @@ class ImageProcessing {
     } else {
       for (int i = 0; i < pixelCount; i++) {
         final o = i * 4;
-        final gray = _luminance(bytes[o + 2], bytes[o + 1], bytes[o]);
+        final gray = luminance(bytes[o + 2], bytes[o + 1], bytes[o]);
         final val = gray > threshold ? 255 : 0;
         bytes[o] = val;
         bytes[o + 1] = val;
@@ -743,5 +791,5 @@ class ImageProcessing {
   }
 
   /// Standard BT.601 luminance from RGB.
-  static int _luminance(int r, int g, int b) => (0.299 * r + 0.587 * g + 0.114 * b).round().clamp(0, 255);
+  static int luminance(int r, int g, int b) => (0.299 * r + 0.587 * g + 0.114 * b).round().clamp(0, 255);
 }

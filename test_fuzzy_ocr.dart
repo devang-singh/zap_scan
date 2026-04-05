@@ -1,26 +1,24 @@
-import 'package:flutter/widgets.dart';
 import 'package:zap_scan/src/ocr/zap_scan_ocr.dart';
 
 void main() {
   final samples = [
-    "000 1e3 5578 90L0",
-    "H000 1R 56789040",
-    "M000 R3 5518 9DL0",
-    "N000 A23 5678 9010",
-    "H000 123 SK78 9010",
-    "4000 LR3 55189010",
-    "H000 123W 56789010",
-    "M000 12Y 56789010",
+    "3610 102077 3663", // Valid Diners (Luhn: 50 % 10 = 0)
+    "8110841018181888", // Invalid Garbage (Luhn: 68 % 10 != 0)
+    "Nepal and Bhutan. 3610 102077 3663 Phone: 1800 202 6161", // Mixed
+    "b529 bO00\nD000 I079", // Scapia Grid (6529 6000 0000 1079)
+    "MPi IN KA O P300476 1224", // False-Luhn Noise from Scapia Bottom Info
+    "b529 bO00\nD000 I079\nMPi IN KA O P300476 1224", // Competitive Case (Card vs Noise)
   ];
 
-  debugPrint("Testing Lenient OCR Extraction...");
+  print("Testing Luhn-Prioritized OCR Extraction...");
   for (final s in samples) {
     final slots = ZapScanOCR.findCardSlots(s);
     if (slots != null) {
       final res = slots.map((s) => s.first).join();
-      debugPrint("Source: '$s' -> Extracted: '$res' (Length: ${res.length})");
+      final isValid = ZapScanOCR.checkLuhn(res);
+      print("Source: '$s'\n -> Extracted: '$res' (Length: ${res.length}, Luhn: $isValid)");
     } else {
-      debugPrint("Source: '$s' -> FAILED");
+      print("Source: '$s' -> FAILED");
     }
   }
 }

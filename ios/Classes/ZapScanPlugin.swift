@@ -57,19 +57,9 @@ public class ZapScanPlugin: NSObject, FlutterPlugin {
             NSLog("ZapScan: recognizeText - Read \(imageData.count) bytes from file")
             
             #if os(iOS)
-            guard let uiImage = UIImage(data: imageData), let cgImage = uiImage.cgImage else {
-                NSLog("ZapScan: recognizeText - UIImage/CGImage decode failed for path: \(imagePath)")
-                result(FlutterError(code: "image_error", message: "Cannot decode image at path: \(imagePath)", details: nil))
-                return
-            }
-            requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            requestHandler = VNImageRequestHandler(data: imageData, options: [:])
             #elseif os(macOS)
-            guard let ciImage = CIImage(data: imageData) else {
-                NSLog("ZapScan: recognizeText - CIImage decode failed for path: \(imagePath)")
-                result(FlutterError(code: "image_error", message: "Cannot decode image at path: \(imagePath)", details: nil))
-                return
-            }
-            requestHandler = VNImageRequestHandler(ciImage: ciImage, options: [:])
+            requestHandler = VNImageRequestHandler(data: imageData, options: [:])
             #endif
         } else {
             guard let flutterData = args["bytes"] as? FlutterStandardTypedData,
@@ -80,16 +70,38 @@ public class ZapScanPlugin: NSObject, FlutterPlugin {
             }
 
             let bytes = flutterData.data
-            let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let bytesPerRow = width * 4
+            let byteCount = bytes.count
+            let isGrayscale = (byteCount == width * height)
+
+            let colorSpace: CGColorSpace
+            let bitmapInfo: CGBitmapInfo
+            let bytesPerRow: Int
+
+            if isGrayscale {
+                colorSpace = CGColorSpaceCreateDeviceGray()
+                bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue)
+                bytesPerRow = width
+            } else {
+                colorSpace = CGColorSpaceCreateDeviceRGB()
+                bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+                bytesPerRow = width * 4
+            }
 
             guard let provider = CGDataProvider(data: bytes as CFData),
-                  let cgImage = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow, space: colorSpace, bitmapInfo: bitmapInfo, provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else {
+                  let cgImage = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: isGrayscale ? 8 : 32, bytesPerRow: bytesPerRow, space: colorSpace, bitmapInfo: bitmapInfo, provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else {
                 result(FlutterError(code: "image_error", message: "Could not create image from bytes", details: nil))
                 return
             }
-            requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            let rotationDeg = args["rotation"] as? Int ?? 0
+            var orientation: CGImagePropertyOrientation = .up
+            switch rotationDeg {
+                case 90: orientation = .right
+                case 180: orientation = .down
+                case 270: orientation = .left
+                default: orientation = .up
+            }
+
+            requestHandler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:])
         }
 
         let request = VNRecognizeTextRequest { (request, error) in
@@ -143,19 +155,9 @@ public class ZapScanPlugin: NSObject, FlutterPlugin {
             NSLog("ZapScan: recognizeBarcode - Read \(imageData.count) bytes from file")
             
             #if os(iOS)
-            guard let uiImage = UIImage(data: imageData), let cgImage = uiImage.cgImage else {
-                NSLog("ZapScan: recognizeBarcode - UIImage/CGImage decode failed for path: \(imagePath)")
-                result(FlutterError(code: "image_error", message: "Cannot decode image at path: \(imagePath)", details: nil))
-                return
-            }
-            requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            requestHandler = VNImageRequestHandler(data: imageData, options: [:])
             #elseif os(macOS)
-            guard let ciImage = CIImage(data: imageData) else {
-                NSLog("ZapScan: recognizeBarcode - CIImage decode failed for path: \(imagePath)")
-                result(FlutterError(code: "image_error", message: "Cannot decode image at path: \(imagePath)", details: nil))
-                return
-            }
-            requestHandler = VNImageRequestHandler(ciImage: ciImage, options: [:])
+            requestHandler = VNImageRequestHandler(data: imageData, options: [:])
             #endif
         } else {
             guard let flutterData = args["bytes"] as? FlutterStandardTypedData,
@@ -166,16 +168,38 @@ public class ZapScanPlugin: NSObject, FlutterPlugin {
             }
 
             let bytes = flutterData.data
-            let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
-            let bytesPerRow = width * 4
+            let byteCount = bytes.count
+            let isGrayscale = (byteCount == width * height)
+
+            let colorSpace: CGColorSpace
+            let bitmapInfo: CGBitmapInfo
+            let bytesPerRow: Int
+
+            if isGrayscale {
+                colorSpace = CGColorSpaceCreateDeviceGray()
+                bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue)
+                bytesPerRow = width
+            } else {
+                colorSpace = CGColorSpaceCreateDeviceRGB()
+                bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+                bytesPerRow = width * 4
+            }
 
             guard let provider = CGDataProvider(data: bytes as CFData),
-                  let cgImage = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bytesPerRow, space: colorSpace, bitmapInfo: bitmapInfo, provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else {
+                  let cgImage = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: isGrayscale ? 8 : 32, bytesPerRow: bytesPerRow, space: colorSpace, bitmapInfo: bitmapInfo, provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else {
                 result(FlutterError(code: "image_error", message: "Could not create image from bytes", details: nil))
                 return
             }
-            requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+            let rotationDeg = args["rotation"] as? Int ?? 0
+            var orientation: CGImagePropertyOrientation = .up
+            switch rotationDeg {
+                case 90: orientation = .right
+                case 180: orientation = .down
+                case 270: orientation = .left
+                default: orientation = .up
+            }
+
+            requestHandler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:])
         }
 
         let request = VNDetectBarcodesRequest { (request, error) in

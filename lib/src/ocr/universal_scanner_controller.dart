@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' as services;
@@ -254,18 +255,118 @@ class UniversalScannerController extends ChangeNotifier {
     if (_isBusy) return null;
     _isBusy = true;
 
+    try {
+      // 1. Pass 1: Try as-is (using Native Path for best OS-level EXIF support)
+      var result = await _scanSinglePass(imageFile: imageFile);
+      if (result != null && result is! ScanErrorResult) return result;
+
+      // 2. Pass 2: Try 180° Rotation (using Native Path if possible, or Manual Bytes)
+      // Since native recognizeText(imagePath) doesn't support rotation arg easily for files,
+      // we'll move to the Byte Path for subsequent passes.
+      final bytes = await imageFile.readAsBytes();
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      final image = frame.image;
+      final width = image.width;
+      final height = image.height;
+
+      final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+      if (data == null) return result;
+      final rawBytes = data.buffer.asUint8List();
+
+      // Convert to luminance once for all subsequent passes
+      final lum = Uint8List(width * height);
+      for (int i = 0; i < width * height; i++) {
+        final o = i * 4;
+        lum[i] = ImageProcessing.luminance(rawBytes[o], rawBytes[o + 1], rawBytes[o + 2]);
+      }
+
+      // Consolidate all successful OCR results into a frequency map to find the best consensus
+      final occurrences = <String, int>{};
+      final results = <String, ZapCardResult>{};
+
+      for (final strategy in [
+        EnhancementStrategy.none,
+        EnhancementStrategy.grayscaleHiContrast,
+        EnhancementStrategy.sharpen,
+        EnhancementStrategy.sobelEdge,
+      ]) {
+        // Prepare luminance buffer for this strategy
+        final workLum = Uint8List.fromList(lum);
+        if (strategy != EnhancementStrategy.none) {
+          _enhancerService.processLuminance(workLum, width, height, strategy);
+        }
+
+        // Try 0° and 180° for each enhancement
+        for (final rot in [0, 180]) {
+          final res = await _scanSinglePass(bytes: workLum, width: width, height: height, rotation: rot);
+          if (res != null && res is ZapCardResult) {
+            final num = res.cardNumber;
+            final isLuhnValid = ZapScanOCR.checkLuhn(num);
+            
+            // Solidify: Luhn-valid results get a massive weight boost (100x)
+            // Probabilistic: Non-valid results still counted (weight 1)
+            final weight = isLuhnValid ? 100 : 1;
+            
+            occurrences[num] = (occurrences[num] ?? 0) + weight;
+            results[num] = res;
+          }
+        }
+      }
+
+      // 3. Consensus Winner: Pick the card number that appeared most often across the 8 passes
+      if (occurrences.isNotEmpty) {
+        final winnerNum = occurrences.entries.reduce((a, b) => a.value >= b.value ? a : b).key;
+        return results[winnerNum];
+      }
+
+      return result;
+    } catch (e) {
+      if (e is services.PlatformException) {
+        return ScanErrorResult(
+          code: e.code,
+          message: e.message ?? "Unknown native error",
+          rawText: e.details?.toString(),
+        );
+      }
+      return ScanErrorResult(
+        code: "unexpected_error",
+        message: e.toString(),
+      );
+    } finally {
+      _isBusy = false;
+    }
+  }
+
+  /// Internal helper to perform a single OCR/Barcode pass for a specific image configuration.
+  Future<ScanResult?> _scanSinglePass({
+    XFile? imageFile,
+    Uint8List? bytes,
+    int? width,
+    int? height,
+    int rotation = 0,
+  }) async {
     Object? lastError;
 
     try {
-      // 1. Try Barcodes first (wrapped separately so a barcode engine
-      //    failure doesn't prevent text/card OCR from running).
+      // 1. Try Barcodes
       if (scanBarcodes) {
         try {
           List<Map<String, dynamic>>? barcodeResults;
-          if (barcodeDelegate != null) {
-            barcodeResults = await barcodeDelegate!(imageFile);
+          if (imageFile != null) {
+             if (barcodeDelegate != null) {
+               barcodeResults = await barcodeDelegate!(imageFile);
+             } else {
+               barcodeResults = await ZapScanPlugin.recognizeBarcode(imagePath: imageFile.path);
+             }
           } else {
-            barcodeResults = await ZapScanPlugin.recognizeBarcode(imagePath: imageFile.path);
+             barcodeResults = await ZapScanPlugin.recognizeBarcode(
+               bytes: bytes!,
+               width: width!,
+               height: height!,
+               rotation: rotation,
+               format: 35, // 35 = YUV_420_888 (Grayscale Y-plane)
+             );
           }
 
           if (barcodeResults != null && barcodeResults.isNotEmpty) {
@@ -275,14 +376,12 @@ class UniversalScannerController extends ChangeNotifier {
               String? rawText;
               if (scanCards) {
                 try {
-                  if (ocrDelegate != null) {
-                    rawText = await ocrDelegate!(imageFile);
+                  if (imageFile != null) {
+                    rawText = ocrDelegate != null ? await ocrDelegate!(imageFile) : await ZapScanPlugin.recognizeText(imagePath: imageFile.path);
                   } else {
-                    rawText = await ZapScanPlugin.recognizeText(imagePath: imageFile.path);
+                    rawText = await ZapScanPlugin.recognizeText(bytes: bytes!, width: width!, height: height!, rotation: rotation);
                   }
-                } catch (_) {
-                  // OCR text is supplementary for barcode results; ignore failures.
-                }
+                } catch (_) {}
               }
               if (payload.startsWith("M1") && payload.length > 20) {
                 final bpResult = BoardingPassOCR.parseBoardingPass(payload, format, rawText);
@@ -292,8 +391,6 @@ class UniversalScannerController extends ChangeNotifier {
             }
           }
         } catch (e) {
-          // Barcode engine failed (e.g. "could not create inference context"
-          // on iOS simulator). Save the error but continue to text/card OCR.
           lastError = e;
         }
       }
@@ -301,18 +398,14 @@ class UniversalScannerController extends ChangeNotifier {
       // 2. Try Cards/OCR Text
       if (scanCards) {
         String? text;
-        if (ocrDelegate != null) {
-          text = await ocrDelegate!(imageFile);
+        if (imageFile != null) {
+          text = ocrDelegate != null ? await ocrDelegate!(imageFile) : await ZapScanPlugin.recognizeText(imagePath: imageFile.path);
         } else {
-          text = await ZapScanPlugin.recognizeText(imagePath: imageFile.path);
+          text = await ZapScanPlugin.recognizeText(bytes: bytes!, width: width!, height: height!, rotation: rotation);
         }
 
         if (text != null && text.isNotEmpty) {
           var cardSlots = ZapScanOCR.findCardSlots(text);
-          if (cardSlots == null) {
-            final reversed = text.split('\n').reversed.join('\n');
-            cardSlots = ZapScanOCR.findCardSlots(reversed);
-          }
           if (cardSlots != null) {
             final tempCardNum = cardSlots.map((s) => s.first).join();
             String? expiry;
@@ -329,34 +422,18 @@ class UniversalScannerController extends ChangeNotifier {
         }
       }
 
-      // If we got here with a saved barcode error and no text results,
-      // surface the original error so the user has context.
-      if (lastError != null) {
-        if (lastError is services.PlatformException) {
-          final pe = lastError;
-          return ScanErrorResult(
-            code: pe.code,
-            message: pe.message ?? "Unknown native error",
-            rawText: pe.details?.toString(),
-          );
-        }
-      }
-      return null;
-    } catch (e) {
-      if (e is services.PlatformException) {
-        final pe = e;
+      if (lastError != null && lastError is services.PlatformException) {
+        final pe = lastError;
         return ScanErrorResult(
           code: pe.code,
           message: pe.message ?? "Unknown native error",
           rawText: pe.details?.toString(),
         );
       }
-      return ScanErrorResult(
-        code: "unexpected_error",
-        message: e.toString(),
-      );
-    } finally {
-      _isBusy = false;
+      return null;
+    } catch (e) {
+      if (e is services.PlatformException) rethrow; // Handled in scanFromImage
+      return null;
     }
   }
 

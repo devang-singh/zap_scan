@@ -1,13 +1,7 @@
 /// A utility class containing the core logic for extracting card details from OCR text.
-///
-/// It supports three main layouts:
-/// * **Horizontal**: All digits on a single line (e.g., "4029 8600 0354 8548").
-/// * **Grid (2×2)**: Digits split across two lines (e.g., 8 digits per line).
-/// * **Vertical**: Digits split across four lines (e.g., 4 digits per line).
 class ZapScanOCR {
-  // Raw OCR gives incorrect characters while trying to find correct set of numbers.
-  // Following are some examples picked from real samples:
-  static const _fixed = <String, String>{
+  // Definite digit-like characters (high confidence)
+  static const _definiteDigits = <String, String>{
     'b': '6',
     'l': '1',
     'I': '1',
@@ -22,6 +16,10 @@ class ZapScanOCR {
     'K': '6',
     'Z': '2',
     'a': '8',
+  };
+
+  // Speculative digit-like characters (noisy: embossed or low-contrast)
+  static const _speculativeDigits = <String, String>{
     'H': '4',
     'W': '4',
     'M': '4',
@@ -39,110 +37,140 @@ class ZapScanOCR {
     'B': ['8', '6'],
   };
 
-  /// Parses the [rawText] to find a valid 14- to 16-digit credit card number sequence.
-  ///
-  /// Returns a list of sets, where each set contains the possible digits for that position.
-  /// Returns `null` if no valid card pattern is found.
+  /// Builds a regex pattern of all possible digit-like characters for the current mapping level.
+  static String _getDigitRegex(bool includeSpeculative) {
+    final chars = StringBuffer('0-9');
+    chars.write(_definiteDigits.keys.join());
+    chars.write(_ambiguous.keys.join());
+    if (includeSpeculative) {
+      chars.write(_speculativeDigits.keys.join());
+    }
+    return '[$chars]';
+  }
+
+  /// Parses the [rawText] to find a valid 13- to 16-digit credit card number sequence.
   static List<Set<String>>? findCardSlots(String rawText) {
     final lines = rawText.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
 
-    // Horizontal
-    // XXXX XXXX XXXX XXXX
-    // XXXX XXXXXX XXXX
-    // XXXX XXXXXX XXXXX
+    // Pass 1: Strict Matching (Definite mappings only)
+    var result = _findInPass(lines, includeSpeculative: false);
+    if (result != null) return result;
+
+    // Pass 2: Speculative Matching (Include noisy mappings as fallback)
+    return _findInPass(lines, includeSpeculative: true);
+  }
+
+  /// Helper to perform a full scanning pass over all layouts with a given mapping level.
+  static List<Set<String>>? _findInPass(List<String> lines, {required bool includeSpeculative}) {
+    final candidates = <List<_Slot>>[];
+
+    // 1. Horizontal
     for (final line in lines) {
-      final result = _matchPattern(line);
-      if (result != null) return result;
-      // Fallback: try lenient line match (no spaces)
-      final lenientResult = _matchLenient(line);
-      if (lenientResult != null) return lenientResult;
+      final res = _matchPattern(line, includeSpeculative);
+      if (res != null) candidates.add(res);
+
+      final len = _matchLenient(line, includeSpeculative);
+      if (len != null) candidates.add(len);
     }
 
-    // Grid (2 × 2)
-    // Two rows each containing 7–9 digit slots.
+    // 2. Grid (2 × 2)
     for (var i = 0; i < lines.length - 1; i++) {
-      final s1 = _toSlots(lines[i]);
-      final s2 = _toSlots(lines[i + 1]);
+      final s1 = _toSlots(lines[i], includeSpeculative: includeSpeculative);
+      final s2 = _toSlots(lines[i + 1], includeSpeculative: includeSpeculative);
+      // Grid cards often have 8 digits per line (4-4), but OCR might drop characters.
+      // We allow 7-9 per line to be flexible.
       if (s1.length >= 7 && s1.length <= 9 && s2.length >= 7 && s2.length <= 9) {
-        final result = _searchByLength([...s1, ...s2]);
-        if (result != null) return result;
+        final res = _searchByLength([...s1, ...s2]);
+        if (res != null) candidates.add(res);
       }
     }
 
-    // Vertical
-    // Treat each line as a potential 4-digit chunk. To handle internal spaces
-    // (e.g., "315 6|") and drop punctuation (e.g., "|2700|"), we strip all
-    // non-alphanumeric characters first before checking density.
-    final quads = <List<List<String>>>[];
-
+    // 3. Vertical
+    final quads = <List<_Slot>>[];
     for (final line in lines) {
-      final clean = line.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '');
-      if (clean.isEmpty) continue;
-
-      final slots = _toSlots(clean);
-      if (clean.length > slots.length + 1) continue;
-
-      if (slots.length == 4) {
-        quads.add(slots);
-      } else if (slots.length == 5) {
-        final firstIsOne = slots.first.contains('1');
-        final lastIsOne = slots.last.contains('1');
-        if (lastIsOne && !firstIsOne) {
-          quads.add(slots.sublist(0, 4)); // strip trailing bar, e.g. "12341" -> "1234"
-        } else if (firstIsOne && !lastIsOne) {
-          quads.add(slots.sublist(1)); // strip leading bar, e.g. "11234" -> "1234"
-        }
-      } else if (slots.length == 6) {
-        if (slots.first.contains('1') && slots.last.contains('1')) {
-          quads.add(slots.sublist(1, 5)); // strip both bars, e.g. "112341" -> "1234"
-        }
+      final slots = _toSlots(line, includeSpeculative: includeSpeculative);
+      if (slots.length >= 4 && slots.length <= 6) {
+        // Vertical blocks (often 4 digits)
+        quads.add(slots.sublist(0, 4));
       }
     }
     if (quads.length >= 4) {
-      final result = _searchVertical(quads);
-      if (result != null) return result;
+      final res = _searchVertical(quads);
+      if (res != null) candidates.add(res);
     }
 
-    return null;
+    if (candidates.isEmpty) return null;
+
+    // Selection Algorithm:
+    // Confidence Score = (Count of Real Digits 0-9) - (Count of Mapped Letters)
+    int getScore(List<_Slot> cand) {
+      return cand.fold(0, (sum, s) => sum + (s.isOriginalDigit ? 1 : -1));
+    }
+
+    List<_Slot>? bestCand;
+    int bestScore = -999;
+    bool bestPassesLuhn = false;
+
+    for (final cand in candidates) {
+      final num = cand.map((s) => s.digits.first).join();
+      final score = getScore(cand);
+      final luhn = checkLuhn(num);
+
+      // Priority 1: Luhn-valid AND higher score
+      // Priority 2: Higher score (probabilistic fallback)
+      if (luhn && !bestPassesLuhn) {
+        // First Luhn valid one we find, set it as best
+        bestPassesLuhn = true;
+        bestScore = score;
+        bestCand = cand;
+      } else if (luhn == bestPassesLuhn) {
+        // Both pass Luhn or both fail Luhn, pick highest score
+        if (score > bestScore) {
+          bestScore = score;
+          bestCand = cand;
+        }
+      }
+    }
+
+    return bestCand?.map((s) => s.digits.toSet()).toList();
   }
 
-  /// Convert a text line into a list of "slots". Each slot is the list of
-  /// possible digit characters for that position.
-  static List<List<String>> _toSlots(String line) {
-    final slots = <List<String>>[];
+  /// Convert a text line into a list of slots.
+  static List<_Slot> _toSlots(String line, {required bool includeSpeculative}) {
+    final slots = <_Slot>[];
     for (final ch in line.split('')) {
       final code = ch.codeUnitAt(0);
       if (code >= 48 && code <= 57) {
-        // '0'–'9': unambiguous digit
-        slots.add([ch]);
+        slots.add(_Slot([ch], true));
       } else if (_ambiguous.containsKey(ch)) {
-        slots.add(List<String>.from(_ambiguous[ch]!));
-      } else if (_fixed.containsKey(ch)) {
-        slots.add([_fixed[ch]!]);
+        slots.add(_Slot(List<String>.from(_ambiguous[ch]!), false));
+      } else if (_definiteDigits.containsKey(ch)) {
+        slots.add(_Slot([_definiteDigits[ch]!], false));
+      } else if (includeSpeculative && _speculativeDigits.containsKey(ch)) {
+        slots.add(_Slot([_speculativeDigits[ch]!], false));
       }
-      // Anything else is noise — skip (J, punctuation, spaces, etc.)
     }
     return slots;
   }
 
-  static List<Set<String>>? _searchByLength(List<List<String>> slots) {
-    for (final len in [16, 15, 14]) {
+  static List<_Slot>? _searchByLength(List<_Slot> slots) {
+    // Grid healing: allow 13-16 digits if it looks like a card
+    for (final len in [16, 15, 14, 13]) {
       if (slots.length < len) continue;
-      final result = slots.sublist(0, len).map((s) => s.toSet()).toList();
-      if (_isValidPrefix(result)) return result;
+      final sub = slots.sublist(0, len);
+      if (_isValidPrefix(sub.map((s) => s.toSet()).toList())) return sub;
     }
     return null;
   }
 
-  static List<Set<String>>? _searchVertical(List<List<List<String>>> quads) {
+  static List<_Slot>? _searchVertical(List<List<_Slot>> quads) {
     final n = quads.length;
     for (var a = 0; a < n - 3; a++) {
       for (var b = a + 1; b < n - 2; b++) {
         for (var c = b + 1; c < n - 1; c++) {
           for (var d = c + 1; d < n; d++) {
             final combined = [...quads[a], ...quads[b], ...quads[c], ...quads[d]];
-            final result = combined.map((s) => s.toSet()).toList();
-            if (_isValidPrefix(result)) return result;
+            if (_isValidPrefix(combined.map((s) => s.toSet()).toList())) return combined;
           }
         }
       }
@@ -150,198 +178,122 @@ class ZapScanOCR {
     return null;
   }
 
-  /// Network-length validation. A 15-digit card claiming to be Visa
-  /// (starting with 4) is actually just a 16-digit card that OCR dropped a digit from.
+  /// Network-centric validation.
   static bool _isValidPrefix(List<Set<String>> slots) {
     if (slots.length < 13 || slots.length > 16) return false;
+    final first = slots[0];
+    final second = slots[1];
 
-    final firstOpt = slots[0];
-    final secondOpt = slots[1];
-
-    if (slots.length == 13) {
-      // Visa (Old): 4
-      return firstOpt.contains('4');
+    // Visa (4)
+    if (first.contains('4')) return true;
+    // MC (5, 2)
+    if (first.contains('5') || first.contains('2')) return true;
+    // Amex (34, 37) / Diners (30, 36, 38, 39)
+    if (first.contains('3')) {
+      if (slots.length == 15) return second.contains('4') || second.contains('7');
+      if (slots.length == 14) return second.any((c) => ['0', '6', '8', '9'].contains(c));
+      return true; // Probabilistic
     }
-
-    if (slots.length == 15) {
-      // Amex: 34, 37
-      if (!firstOpt.contains('3')) return false;
-      if (!secondOpt.contains('4') && !secondOpt.contains('7')) return false;
-      return true;
-    }
-
-    if (slots.length == 14) {
-      // Diners Club: 30, 36, 38, 39
-      if (!firstOpt.contains('3')) return false;
-      if (!secondOpt.any((c) => ['0', '6', '8', '9'].contains(c))) return false;
-      return true;
-    }
-
-    if (slots.length == 16) {
-      // Visa (4), MC (5, 2), RuPay/Discover (6, 8), JCB (35)
-      return firstOpt.any((c) => ['2', '3', '4', '5', '6', '8'].contains(c));
-    }
+    // Discover/RuPay (6, 8)
+    if (first.contains('6') || first.contains('8')) return true;
 
     return false;
   }
 
-  // All characters that could be a digit after substitution.
-  // Must stay in sync with _fixed and _ambiguous keys.
-  static const _dl = r'[0-9bBLlIiOoDSGZa]';
+  /// Standard Luhn algorithm.
+  static bool checkLuhn(String number) {
+    if (number.length < 13) return false;
+    int sum = 0;
+    bool alternate = false;
+    for (int i = number.length - 1; i >= 0; i--) {
+      int? n = int.tryParse(number[i]);
+      if (n == null) return false;
+      if (alternate) {
+        n *= 2;
+        if (n > 9) n -= 9;
+      }
+      sum += n;
+      alternate = !alternate;
+    }
+    return (sum % 10 == 0);
+  }
 
-  /// Match known card number spacing patterns explicitly.
-  /// Anchoring to spaces prevents digit-like chars in surrounding text
-  /// (e.g. I/S from "VISA") from shifting the extraction window.
-  static List<Set<String>>? _matchPattern(String line) {
-    const d = _dl;
-    // 4-4-4-4  (16 digits: Visa / MC / RuPay …)
-    var m = RegExp('($d{4})\\s+($d{4})\\s+($d{4})\\s+($d{4})').firstMatch(line);
-    if (m != null) {
-      final resRaw = '${m[1]}${m[2]}${m[3]}${m[4]}';
-      final res = resRaw.split('').map((ch) => _toSlots(ch).first.toSet()).toList();
-      if (_isValidPrefix(res)) return res;
-    }
-    // 4-6-5    (15 digits: Amex)
-    m = RegExp('($d{4})\\s+($d{6})\\s+($d{5})').firstMatch(line);
-    if (m != null) {
-      final resRaw = '${m[1]}${m[2]}${m[3]}';
-      final res = resRaw.split('').map((ch) => _toSlots(ch).first.toSet()).toList();
-      if (_isValidPrefix(res)) return res;
-    }
-    // 4-6-4    (14 digits: Diners Club)
-    m = RegExp('($d{4})\\s+($d{6})\\s+($d{4})').firstMatch(line);
-    if (m != null) {
-      final resRaw = '${m[1]}${m[2]}${m[3]}';
-      final res = resRaw.split('').map((ch) => _toSlots(ch).first.toSet()).toList();
-      if (_isValidPrefix(res)) return res;
+  static List<_Slot>? _matchPattern(String line, bool includeSpeculative) {
+    final d = _getDigitRegex(includeSpeculative);
+    // Patterns with spaces
+    final patterns = [
+      RegExp('($d{4})\\s+($d{4})\\s+($d{4})\\s+($d{4})'), // 4-4-4-4
+      RegExp('($d{4})\\s+($d{6})\\s+($d{5})'), // 4-6-5
+      RegExp('($d{4})\\s+($d{6})\\s+($d{4})'), // 4-6-4
+    ];
+
+    for (final p in patterns) {
+      final m = p.firstMatch(line);
+      if (m != null) {
+        final raw = List.generate(m.groupCount, (i) => m.group(i + 1)!).join();
+        final res = _toSlots(raw, includeSpeculative: includeSpeculative);
+        if (_isValidPrefix(res.map((s) => s.toSet()).toList())) return res;
+      }
     }
     return null;
   }
 
-  /// Lenient matching that doesn't care about spaces.
-  /// It just extracts all digit-like characters and looks for a valid prefix.
-  static List<Set<String>>? _matchLenient(String line) {
-    final slots = _toSlots(line);
-    // Allow for 13..16 digit sequences even with noise in the middle.
-    // However, if we find a long sequence, give preference to it.
+  static List<_Slot>? _matchLenient(String line, bool includeSpeculative) {
+    final slots = _toSlots(line, includeSpeculative: includeSpeculative);
     for (final len in [16, 15, 14, 13]) {
-       if (slots.length < len) continue;
-       
-       // Sliding window in case of prefixes like "No. 4000..."
-       for (var i = 0; i <= slots.length - len; i++) {
-          final sub = slots.sublist(i, i + len).map((s) => s.toSet()).toList();
-          if (_isValidPrefix(sub)) return sub;
-       }
+      if (slots.length < len) continue;
+      for (var i = 0; i <= slots.length - len; i++) {
+        final sub = slots.sublist(i, i + len);
+        if (_isValidPrefix(sub.map((s) => s.toSet()).toList())) return sub;
+      }
     }
     return null;
   }
 
-  /// Attempts to find an expiration date in the raw text.
-  ///
-  /// Looks for patterns like MM/YY, MM\YY, MM|YY, MM-YY, MM/YYYY, etc.
-  /// Also handles common OCR mistakes like `l` or `1` or `7` instead of `/`.
+  /// Find expiration date.
   static String? findExpiryDate(String rawText) {
-    // We clean the text to just numbers and likely separators.
-    final cleanText = rawText.replaceAll(RegExp(r'[^0-9a-zA-Z\n/\\\-\|\s]'), '');
-    final lines = cleanText.split('\n');
-
-    // M: 01-12
-    // Sep: / \ - |  (allow space around it, or 'l', '1', '7' as common mistakes)
-    // Y: 20-40 (for YY) or 2020-2040 (for YYYY)
-
-    // Pattern looking for 01-12 followed by a separator and 2 or 4 digits.
-    // It captures month in group 1, year in group 2.
-    // Separator could be non-alphanumeric, or a space, or common misreads like 'L', 'l', '1', '7', 'I', 'i'
     final expRegex = RegExp(r'\b(0[1-9]|1[0-2])\s*([/\-\|\\lLIi17]|\s)\s*([0-9]{2,4})\b');
-
+    final lines = rawText.split('\n');
     for (final line in lines) {
       final matches = expRegex.allMatches(line);
       for (final match in matches) {
         final monthStr = match.group(1);
         final yearStr = match.group(3);
-
         if (monthStr != null && yearStr != null) {
           int? year = int.tryParse(yearStr);
           if (year != null) {
-            // Validate year constraints
-            if (yearStr.length == 2 && year >= 24 && year <= 49) {
-              // 2024 to 2049
-              return '$monthStr/$yearStr';
-            } else if (yearStr.length == 4 && year >= 2024 && year <= 2049) {
-              return '$monthStr/${yearStr.substring(2)}'; // Normalize to MM/YY
-            }
+            if (yearStr.length == 2 && year >= 24 && year <= 49) return '$monthStr/$yearStr';
+            if (yearStr.length == 4 && year >= 2024 && year <= 2049) return '$monthStr/${yearStr.substring(2)}';
           }
         }
       }
     }
-
-    // Fallback: Extremely compact date like 1226 (MMYY) surrounded by spaces or boundaries
-    // We only accept it if month is 01-12 and year is 24-49
-    final compactRegex = RegExp(r'\b(0[1-9]|1[0-2])([2-4][0-9])\b');
-    for (final line in lines) {
-      final matches = compactRegex.allMatches(line);
-      for (final match in matches) {
-        final monthStr = match.group(1);
-        final yearStr = match.group(2);
-        if (monthStr != null && yearStr != null) {
-          int? year = int.tryParse(yearStr);
-          if (year != null && year >= 24 && year <= 49) {
-            return '$monthStr/$yearStr';
-          }
-        }
-      }
-    }
-
     return null;
   }
 
-  /// Attempts to find a CVV (3 or 4 digits).
-  ///
-  /// Excludes chunks that are identical to segments of the [knownCardNumber].
+  /// Find CVV.
   static String? findCvv(String rawText, String? knownCardNumber) {
-    final lines = rawText.split('\n');
-
     final cvvRegex = RegExp(r'\b([0-9]{3,4})\b');
-
+    final lines = rawText.split('\n');
     for (final line in lines) {
-      // Sometimes CVV is prefixed with CVV, CVC, CID, etc.
       final matches = cvvRegex.allMatches(line);
       for (final match in matches) {
         final candidate = match.group(1);
         if (candidate != null) {
-          // Rule out if it's part of the known card number (e.g. the first 4 digits of Visa, or Amex)
-          // Or if it's the exact same as an expiry date's year (e.g., "2026")
-          if (knownCardNumber != null && knownCardNumber.contains(candidate)) {
-            continue;
-          }
-
-          // Rule out sizes > 4 (already handled by regex \b)
-          // Look for keywords nearby in the same line?
-          // Usually just blindly returning a 3-4 digit string that passes rules is "best effort".
-          // We can prioritize it if we see "CVV" or "CVC".
-          final upperLine = line.toUpperCase();
-          if (upperLine.contains('CVV') || upperLine.contains('CVC') || upperLine.contains('CID')) {
-            return candidate; // High confidence
-          }
-
-          // If no keyword, but it's a 3 or 4 digit standalone, we might return it if we are desperate.
-          // Because AMEX cards have 4 digits on the front as CID.
-          // Let's just return the first valid 3-4 digit block that's untouched.
-          // To reduce false positives, we might only accept 4 digits if AMEX, 3 digits otherwise?
-          // Since it's best effort, we will just return it.
-          if (candidate.length == 3 || candidate.length == 4) {
-            // Exclude obvious years like 2024, 2025
-            if (candidate.length == 4) {
-              final cInt = int.tryParse(candidate);
-              if (cInt != null && cInt >= 2000 && cInt <= 2050) {
-                continue; // likely a year
-              }
-            }
-            return candidate;
-          }
+          if (knownCardNumber != null && knownCardNumber.contains(candidate)) continue;
+          final cInt = int.tryParse(candidate);
+          if (candidate.length == 4 && cInt != null && cInt >= 2000 && cInt <= 2050) continue;
+          return candidate;
         }
       }
     }
     return null;
   }
+}
+
+class _Slot {
+  final List<String> digits;
+  final bool isOriginalDigit;
+  _Slot(this.digits, this.isOriginalDigit);
+  Set<String> toSet() => digits.toSet();
 }

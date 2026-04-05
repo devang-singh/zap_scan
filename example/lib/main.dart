@@ -87,7 +87,8 @@ class _ZapScanExampleState extends State<ZapScanExample> {
             "Number: ${result.cardNumber}\n"
             "Guessed: ${result.guessedCardNumber ?? 'N/A'}\n"
             "Expiry: ${result.expiryDate ?? 'N/A'}\n"
-            "CVV: ${result.cvv ?? 'N/A'}");
+            "CVV: ${result.cvv ?? 'N/A'}\n"
+            "Raw: ${result.rawText}\n");
       } else if (result is FlightTicketResult) {
         setState(() => _status = "✈️ Boarding Pass\n"
             "Name: ${result.passengerName ?? 'N/A'}\n"
