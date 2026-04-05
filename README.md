@@ -5,8 +5,6 @@
 
 **Zap Scan** is a package for Flutter that extracts data from cards, barcodes, and boarding passes. It leverages native, on-device OCR and EMV NFC to provide a "bulletproof" scanning experience.
 
-![Zap Scan Mockup](doc/assets/card_scanner.png)
-
 ## Features
 
 - 🃏 **Card Scanning**: Robust OCR for 14- to 16-digit payment cards. Handles horizontal, grid (2×2), and vertical layouts.
@@ -14,8 +12,6 @@
 - 🛫 **Boarding Pass Parsing**: Full IATA BCBP support to extract PNR, Seat, Flight Number, and more.
 - 💳 **EMV NFC**: Contactless card reading (PAN & Expiry) for Visa, Mastercard, Amex, RuPay, and Diners.
 - 📊 **Stability Consensus**: Built-in "consensus mechanism" that requires multiple identical frames before confirming a result, preventing "fluttery" OCR misreads.
-
-![Boarding Pass Mockup](doc/assets/boarding_pass.png)
 
 ## Installation
 
