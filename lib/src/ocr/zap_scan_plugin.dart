@@ -31,6 +31,8 @@ class ZapScanPlugin {
         if (imagePath != null) 'imagePath': imagePath,
       });
       return text;
+    } on PlatformException {
+      rethrow;
     } catch (e) {
       return null;
     }
@@ -61,6 +63,8 @@ class ZapScanPlugin {
       });
       if (barcodes == null) return null;
       return barcodes.map((e) => Map<String, dynamic>.from(e)).toList();
+    } on PlatformException {
+      rethrow;
     } catch (e) {
       return null;
     }

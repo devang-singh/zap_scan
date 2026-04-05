@@ -1,9 +1,7 @@
 import 'dart:async';
-import 'dart:io';
-
 import 'package:camera/camera.dart';
-import 'package:flutter/cupertino.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' as services;
 import 'package:google_mlkit_commons/google_mlkit_commons.dart';
 import 'zap_scan_ocr.dart';
 import 'image_processing.dart';
@@ -21,7 +19,7 @@ typedef ScanBarcodeDelegate = Future<List<Map<String, dynamic>>?> Function(XFile
 
 /// The central controller for managing the scanning lifecycle, camera streams,
 /// and consensus-based OCR/Barcode extraction.
-/// 
+///
 /// This class handles:
 /// * Camera initialization and streaming.
 /// * Real-time image enhancement.
@@ -52,13 +50,30 @@ class UniversalScannerController extends ChangeNotifier {
   /// Whether to attempt extracting the card's 3- or 4-digit CVV.
   bool scanCvv = false;
 
-  /// Custom OCR engine for non-mobile platforms (Web/Desktop). 
+  /// Custom OCR engine for non-mobile platforms (Web/Desktop).
   /// If null, the native ML Kit plugin is used.
   ScanOcrDelegate? ocrDelegate;
 
   /// Custom Barcode engine for non-mobile platforms (Web/Desktop).
   /// If null, the native ML Kit plugin is used.
   ScanBarcodeDelegate? barcodeDelegate;
+
+  bool _showDebugOverlay = false;
+  bool _isDebugStreamPaused = false;
+
+  /// Whether to show a live debug overlay with raw OCR detections.
+  bool get showDebugOverlay => _showDebugOverlay;
+  set showDebugOverlay(bool value) {
+    _showDebugOverlay = value;
+    notifyListeners();
+  }
+
+  /// Whether to pause the live debug stream for manual inspection.
+  bool get isDebugStreamPaused => _isDebugStreamPaused;
+  set isDebugStreamPaused(bool value) {
+    _isDebugStreamPaused = value;
+    notifyListeners();
+  }
 
   /// Returns true if the image stabilizer detects significant glare.
   bool get glareDetected => _enhancerService.glareDetected;
@@ -71,27 +86,30 @@ class UniversalScannerController extends ChangeNotifier {
   bool get isPaused => _isPaused;
 
   bool _torchOn = false;
-  
+
   /// Returns true if the camera flash/torch is currently enabled.
   bool get torchOn => _torchOn;
 
   String? _probableCard;
-  
+
   /// The current most probable card number being tracked.
   String? get probableCard => _probableCard;
 
   ScanResult? _finalConfirmedResult;
-  
+
   /// The final confirmed result once consensus is reached.
   ScanResult? get finalConfirmedResult => _finalConfirmedResult;
 
+  /// The most accurate guessed card number so far.
+  String? get guessedCard => _guessedCard;
+
   String? _probableExpiry;
-  
+
   /// The current most probable expiry date (MM/YY).
   String? get probableExpiry => _probableExpiry;
 
   String? _probableCvv;
-  
+
   /// The current most probable CVV.
   String? get probableCvv => _probableCvv;
 
@@ -99,7 +117,7 @@ class UniversalScannerController extends ChangeNotifier {
   bool get isConfirmed => _finalConfirmedResult != null;
 
   List<String> _rawLines = [];
-  
+
   /// Debugging lines from the OCR engine (strategy notes + raw text).
   List<String> get rawLines => _rawLines;
 
@@ -108,26 +126,31 @@ class UniversalScannerController extends ChangeNotifier {
 
   /// Callback triggered when a final [ScanResult] is confirmed.
   final void Function(ScanResult result)? onResultScanned;
-  
+
   /// Callback triggered for every frame with the raw OCR text.
   final void Function(String rawText)? onRawDataScanned;
-  
+
   /// Callback triggered when the camera is initialized and ready.
   final void Function()? onCameraReady;
-  
+
   /// Callback triggered when an error occurs during scanning.
   final void Function(Object error)? onError;
 
   String _rawText = "";
-  
+
   /// The raw text from the most recent OCR frame.
   String get rawText => _rawText;
 
   static const int _requiredConsensus = 3;
-  List<Set<String>>? _consensusSlots;
+  static const int _historyLimit = 15; // Track last 15 valid frames
+  
+  // Frequency map for each of the 16 digit positions
+  final List<Map<String, int>> _digitFrequency = List.generate(16, (_) => {});
+  int _totalValidFrames = 0;
+  String? _guessedCard;
+
   final Map<String, int> _expiryVotes = {};
   final Map<String, int> _cvvVotes = {};
-  int _consensusFrames = 0;
 
   int _barcodeConsensusFrames = 0;
   String? _lastBarcodePayload;
@@ -146,9 +169,10 @@ class UniversalScannerController extends ChangeNotifier {
     this.scanCvv = false,
   });
 
-  /// Initializes and starts the back camera. 
+  /// Initializes and starts the back camera.
   /// Automatically picks the back camera if available.
   Future<void> startCamera() async {
+    reset();
     try {
       if (_cameras.isEmpty) {
         _cameras = await availableCameras();
@@ -165,7 +189,7 @@ class UniversalScannerController extends ChangeNotifier {
           camera,
           ResolutionPreset.medium,
           enableAudio: false,
-          imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
+          imageFormatGroup: defaultTargetPlatform == TargetPlatform.android ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
         );
 
         await _cameraController!.initialize();
@@ -224,81 +248,131 @@ class UniversalScannerController extends ChangeNotifier {
   }
 
   /// Runs the universal parsing logic on a static image instead of the camera live feed.
-  /// 
+  ///
   /// This method is cross-platform and uses [ocrDelegate]/[barcodeDelegate] if on Web/Desktop.
   Future<ScanResult?> scanFromImage(XFile imageFile) async {
-    // 1. Try Barcodes first
-    if (scanBarcodes) {
-      List<Map<String, dynamic>>? barcodeResults;
-      if (barcodeDelegate != null) {
-        barcodeResults = await barcodeDelegate!(imageFile);
-      } else {
-         barcodeResults = await ZapScanPlugin.recognizeBarcode(imagePath: imageFile.path);
-      }
-      
-      if (barcodeResults != null && barcodeResults.isNotEmpty) {
-        final payload = barcodeResults.first['rawValue'] as String?;
-        final format = barcodeResults.first['format'] as String? ?? "UNKNOWN";
-        if (payload != null) {
-          String? rawText;
-          if (scanCards) {
-            if (ocrDelegate != null) {
-              rawText = await ocrDelegate!(imageFile);
-            } else {
-              rawText = await ZapScanPlugin.recognizeText(imagePath: imageFile.path);
+    if (_isBusy) return null;
+    _isBusy = true;
+
+    Object? lastError;
+
+    try {
+      // 1. Try Barcodes first (wrapped separately so a barcode engine
+      //    failure doesn't prevent text/card OCR from running).
+      if (scanBarcodes) {
+        try {
+          List<Map<String, dynamic>>? barcodeResults;
+          if (barcodeDelegate != null) {
+            barcodeResults = await barcodeDelegate!(imageFile);
+          } else {
+            barcodeResults = await ZapScanPlugin.recognizeBarcode(imagePath: imageFile.path);
+          }
+
+          if (barcodeResults != null && barcodeResults.isNotEmpty) {
+            final payload = barcodeResults.first['rawValue'] as String?;
+            final format = barcodeResults.first['format'] as String? ?? "UNKNOWN";
+            if (payload != null) {
+              String? rawText;
+              if (scanCards) {
+                try {
+                  if (ocrDelegate != null) {
+                    rawText = await ocrDelegate!(imageFile);
+                  } else {
+                    rawText = await ZapScanPlugin.recognizeText(imagePath: imageFile.path);
+                  }
+                } catch (_) {
+                  // OCR text is supplementary for barcode results; ignore failures.
+                }
+              }
+              if (payload.startsWith("M1") && payload.length > 20) {
+                final bpResult = BoardingPassOCR.parseBoardingPass(payload, format, rawText);
+                if (bpResult != null) return bpResult;
+              }
+              return BarcodeResult(payload: payload, format: format, rawText: rawText);
             }
           }
-          if (payload.startsWith("M1") && payload.length > 20) {
-            final bpResult = BoardingPassOCR.parseBoardingPass(payload, format, rawText);
-            if (bpResult != null) return bpResult;
-          }
-          return BarcodeResult(payload: payload, format: format, rawText: rawText);
+        } catch (e) {
+          // Barcode engine failed (e.g. "could not create inference context"
+          // on iOS simulator). Save the error but continue to text/card OCR.
+          lastError = e;
         }
       }
-    }
 
-    // 2. Try Cards/OCR Text
-    if (scanCards) {
-      String? text;
-      if (ocrDelegate != null) {
-        text = await ocrDelegate!(imageFile);
-      } else {
-        text = await ZapScanPlugin.recognizeText(imagePath: imageFile.path);
+      // 2. Try Cards/OCR Text
+      if (scanCards) {
+        String? text;
+        if (ocrDelegate != null) {
+          text = await ocrDelegate!(imageFile);
+        } else {
+          text = await ZapScanPlugin.recognizeText(imagePath: imageFile.path);
+        }
+
+        if (text != null && text.isNotEmpty) {
+          var cardSlots = ZapScanOCR.findCardSlots(text);
+          if (cardSlots == null) {
+            final reversed = text.split('\n').reversed.join('\n');
+            cardSlots = ZapScanOCR.findCardSlots(reversed);
+          }
+          if (cardSlots != null) {
+            final tempCardNum = cardSlots.map((s) => s.first).join();
+            String? expiry;
+            String? cvv;
+            if (scanExpiryDate) expiry = ZapScanOCR.findExpiryDate(text);
+            if (scanCvv) cvv = ZapScanOCR.findCvv(text, tempCardNum);
+            return ZapCardResult(
+              cardNumber: tempCardNum,
+              expiryDate: expiry,
+              cvv: cvv,
+              rawText: text,
+            );
+          }
+        }
       }
-      
-      if (text == null) return null;
-      var cardSlots = ZapScanOCR.findCardSlots(text);
-      if (cardSlots == null) {
-        final reversed = text.split('\n').reversed.join('\n');
-        cardSlots = ZapScanOCR.findCardSlots(reversed);
+
+      // If we got here with a saved barcode error and no text results,
+      // surface the original error so the user has context.
+      if (lastError != null) {
+        if (lastError is services.PlatformException) {
+          final pe = lastError;
+          return ScanErrorResult(
+            code: pe.code,
+            message: pe.message ?? "Unknown native error",
+            rawText: pe.details?.toString(),
+          );
+        }
       }
-      if (cardSlots != null) {
-        final tempCardNum = cardSlots.map((s) => s.first).join();
-        String? expiry;
-        String? cvv;
-        if (scanExpiryDate) expiry = ZapScanOCR.findExpiryDate(text);
-        if (scanCvv) cvv = ZapScanOCR.findCvv(text, tempCardNum);
-        return ZapCardResult(
-          cardNumber: tempCardNum,
-          expiryDate: expiry,
-          cvv: cvv,
-          rawText: text,
+      return null;
+    } catch (e) {
+      if (e is services.PlatformException) {
+        final pe = e;
+        return ScanErrorResult(
+          code: pe.code,
+          message: pe.message ?? "Unknown native error",
+          rawText: pe.details?.toString(),
         );
       }
+      return ScanErrorResult(
+        code: "unexpected_error",
+        message: e.toString(),
+      );
+    } finally {
+      _isBusy = false;
     }
-    return null;
   }
 
   /// Resets the controller's internal state and consensus tracking.
   void reset() {
     _probableCard = null;
+    _guessedCard = null;
     _finalConfirmedResult = null;
     _probableExpiry = null;
     _probableCvv = null;
-    _consensusSlots = null;
+    _totalValidFrames = 0;
+    for (var f in _digitFrequency) {
+      f.clear();
+    }
     _expiryVotes.clear();
     _cvvVotes.clear();
-    _consensusFrames = 0;
     _barcodeConsensusFrames = 0;
     _lastBarcodePayload = null;
     _rawLines = [];
@@ -322,24 +396,30 @@ class UniversalScannerController extends ChangeNotifier {
 
       // 1. BARCODE SCANNING
       if (scanBarcodes) {
-        final barcodeResults = await ZapScanPlugin.recognizeBarcode(
-          bytes: inputImage.bytes!,
-          width: inputImage.metadata!.size.width.toInt(),
-          height: inputImage.metadata!.size.height.toInt(),
-          rotation: inputImage.metadata!.rotation.rawValue,
-          format: inputImage.metadata!.format.rawValue,
-        );
+        try {
+          final barcodeResults = await ZapScanPlugin.recognizeBarcode(
+            bytes: inputImage.bytes!,
+            width: inputImage.metadata!.size.width.toInt(),
+            height: inputImage.metadata!.size.height.toInt(),
+            rotation: inputImage.metadata!.rotation.rawValue,
+            format: inputImage.metadata!.format.rawValue,
+          );
 
-        if (barcodeResults != null && barcodeResults.isNotEmpty) {
-          final payload = barcodeResults.first['rawValue'] as String?;
-          final format = barcodeResults.first['format'] as String?;
-          if (payload != null) {
-            _intersectBarcodeConsensus(payload, format ?? "UNKNOWN");
-            if (_finalConfirmedResult != null) return; // Exit if confirmed
+          if (barcodeResults != null && barcodeResults.isNotEmpty) {
+            final payload = barcodeResults.first['rawValue'] as String?;
+            final format = barcodeResults.first['format'] as String?;
+            if (payload != null) {
+              _intersectBarcodeConsensus(payload, format ?? "UNKNOWN");
+              if (_finalConfirmedResult != null) return; // Exit if confirmed
+            } else {
+              _resetBarcodeConsensus();
+            }
           } else {
             _resetBarcodeConsensus();
           }
-        } else {
+        } catch (_) {
+          // Barcode engine failed (e.g. iOS simulator inference context).
+          // Fall through to text/card OCR.
           _resetBarcodeConsensus();
         }
       }
@@ -400,9 +480,12 @@ class UniversalScannerController extends ChangeNotifier {
           }
         }
 
-        _rawText = filteredText;
-        onRawDataScanned?.call(filteredText);
-        _rawLines = dump;
+        // Only update debug stream if not paused
+        if (!isDebugStreamPaused) {
+          _rawText = filteredText;
+          onRawDataScanned?.call(filteredText);
+          _rawLines = dump;
+        }
 
         if (_finalConfirmedResult == null) {
           String? expiry;
@@ -411,8 +494,12 @@ class UniversalScannerController extends ChangeNotifier {
             final tempCardNum = cardSlots.map((s) => s.first).join();
             if (scanExpiryDate) expiry = ZapScanOCR.findExpiryDate(filteredText);
             if (scanCvv) cvv = ZapScanOCR.findCvv(filteredText, tempCardNum);
+            
+            _updateCardFrequency(cardSlots, expiry, cvv);
+          } else {
+             // Optional: slowly decay frequency if no card found to handle card swap
+             _decayFrequencies();
           }
-          _intersectCardConsensus(cardSlots, expiry, cvv);
         }
       }
 
@@ -460,59 +547,97 @@ class UniversalScannerController extends ChangeNotifier {
     }
   }
 
-  void _intersectCardConsensus(List<Set<String>>? newSlots, String? newExpiry, String? newCvv) {
-    if (newSlots == null) return;
+  void _updateCardFrequency(List<Set<String>>? newSlots, String? newExpiry, String? newCvv) {
+    if (newSlots == null || newSlots.isEmpty) return;
 
     if (newExpiry != null) _expiryVotes[newExpiry] = (_expiryVotes[newExpiry] ?? 0) + 1;
     if (newCvv != null) _cvvVotes[newCvv] = (_cvvVotes[newCvv] ?? 0) + 1;
 
-    if (_consensusSlots == null || _consensusSlots!.length != newSlots.length) {
-      _consensusSlots = newSlots.map((s) => Set<String>.from(s)).toList();
-      _consensusFrames = 1;
-      _updateProbableCard();
-      return;
+    // Align slots to 16 digits (right-aligned for now, as most cards are 16 or 15/14)
+    final offset = 16 - newSlots.length;
+    if (offset < 0) return; // Should not happen with current OCR logic
+
+    // Cap the buffer to keep it fresh
+    if (_totalValidFrames >= _historyLimit) {
+      for (var f in _digitFrequency) {
+        f.forEach((key, value) {
+           f[key] = (value * 0.8).floor(); // Decay old data
+        });
+      }
+      _totalValidFrames = (_totalValidFrames * 0.8).floor();
     }
 
-    bool stillValid = true;
-    final nextConsensus = <Set<String>>[];
-
+    _totalValidFrames++;
     for (int i = 0; i < newSlots.length; i++) {
-      final intersection = _consensusSlots![i].intersection(newSlots[i]);
-      if (intersection.isNotEmpty) {
-        nextConsensus.add(intersection);
-      } else {
-        stillValid = false;
-        break;
+      final pos = i + offset;
+      if (pos >= 16) break;
+      
+      for (final digit in newSlots[i]) {
+        _digitFrequency[pos][digit] = (_digitFrequency[pos][digit] ?? 0) + 1;
       }
     }
 
-    if (stillValid) {
-      _consensusSlots = nextConsensus;
-      _consensusFrames++;
-      _updateProbableCard();
+    _updateProbableCard();
 
-      if (_consensusFrames >= _requiredConsensus) {
-        final confirmedCardStr = _probableCard!;
-
-        _finalConfirmedResult = ZapCardResult(
-          cardNumber: confirmedCardStr,
+    // Check if we have enough consensus to finalize
+    // For finalization, we still want a "perfect" set of digits that pass Luhn
+    if (_totalValidFrames >= _requiredConsensus && _probableCard != null) {
+       // Only finalize if the probable card has enough stable digits
+       // In fuzzy mode, we might finalize even if Luhn fails if we want "most accurate"
+       // but for the primary result, let's stick to Luhn or high stability.
+       
+       _finalConfirmedResult = ZapCardResult(
+          cardNumber: _probableCard!,
+          guessedCardNumber: _guessedCard,
           expiryDate: _probableExpiry,
           cvv: _probableCvv,
           rawText: _rawText,
         );
 
         onResultScanned?.call(_finalConfirmedResult!);
+    }
+  }
+
+  void _decayFrequencies() {
+    // If we haven't seen a card for many frames, reset.
+    // This allows the user to switch cards.
+    if (_totalValidFrames > 0) {
+      _totalValidFrames = 0; // Simple reset for now
+      for (var f in _digitFrequency) {
+        f.clear();
       }
-    } else {
-      _consensusSlots = newSlots.map((s) => Set<String>.from(s)).toList();
-      _consensusFrames = 1;
-      _updateProbableCard();
+      _probableCard = null;
+      _guessedCard = null;
     }
   }
 
   void _updateProbableCard() {
-    if (_consensusSlots == null) return;
-    _probableCard = _consensusSlots!.map((s) => s.first).join();
+    final List<String?> topDigits = List.generate(16, (i) {
+      if (_digitFrequency[i].isEmpty) return null;
+      return _digitFrequency[i].entries.reduce((a, b) => a.value > b.value ? a : b).key;
+    });
+
+    _guessedCard = topDigits.where((d) => d != null).join();
+
+    // For the "probable" (validated) card, we only pick digits that appeared in at least 
+    // 50% of the valid frames, and we need at least 13-16 digits.
+    final stableDigits = <String>[];
+    for (int i = 0; i < 16; i++) {
+      if (_digitFrequency[i].isEmpty) continue;
+      final best = _digitFrequency[i].entries.reduce((a, b) => a.value > b.value ? a : b);
+      if (best.value >= (_totalValidFrames / 2).ceil() && best.value >= 2) {
+        stableDigits.add(best.key);
+      } else {
+        // Gap in stabilization
+        break; 
+      }
+    }
+
+    if (stableDigits.length >= 13) {
+      _probableCard = stableDigits.join();
+    } else {
+      _probableCard = null;
+    }
 
     if (_expiryVotes.isNotEmpty) {
       _probableExpiry = _expiryVotes.entries.reduce((a, b) => a.value > b.value ? a : b).key;
@@ -526,26 +651,26 @@ class UniversalScannerController extends ChangeNotifier {
     final controller = _cameraController;
     if (controller == null) return 0;
 
-    final DeviceOrientation orientation = controller.value.deviceOrientation;
+    final services.DeviceOrientation orientation = controller.value.deviceOrientation;
     int deviceDeg = 0;
     switch (orientation) {
-      case DeviceOrientation.portraitUp:
+      case services.DeviceOrientation.portraitUp:
         deviceDeg = 0;
         break;
-      case DeviceOrientation.landscapeLeft:
+      case services.DeviceOrientation.landscapeLeft:
         deviceDeg = 90;
         break;
-      case DeviceOrientation.portraitDown:
+      case services.DeviceOrientation.portraitDown:
         deviceDeg = 180;
         break;
-      case DeviceOrientation.landscapeRight:
+      case services.DeviceOrientation.landscapeRight:
         deviceDeg = 270;
         break;
     }
 
     final camera = _cameras[_cameraIndex];
     final sensorOrientation = camera.sensorOrientation;
-    if (Platform.isIOS) return sensorOrientation;
+    if (defaultTargetPlatform == TargetPlatform.iOS) return sensorOrientation;
 
     if (camera.lensDirection == CameraLensDirection.front) {
       return (sensorOrientation + deviceDeg) % 360;

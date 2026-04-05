@@ -1,7 +1,6 @@
-import 'dart:io';
-import 'dart:typed_data';
+import 'dart:ui';
 import 'package:camera/camera.dart';
-import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_commons/google_mlkit_commons.dart';
 
 /// Strategies for enhancing camera images before OCR processing.
@@ -198,7 +197,7 @@ class ImageProcessing {
     final width = image.width;
     final height = image.height;
     final pixelCount = width * height;
-    final isNv21 = Platform.isAndroid;
+    final isNv21 = defaultTargetPlatform == TargetPlatform.android;
 
     // Work on a copy so we don't mutate the camera's buffer.
     final bytes = Uint8List.fromList(plane.bytes);

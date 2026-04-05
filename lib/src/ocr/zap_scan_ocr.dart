@@ -1,5 +1,5 @@
 /// A utility class containing the core logic for extracting card details from OCR text.
-/// 
+///
 /// It supports three main layouts:
 /// * **Horizontal**: All digits on a single line (e.g., "4029 8600 0354 8548").
 /// * **Grid (2×2)**: Digits split across two lines (e.g., 8 digits per line).
@@ -19,8 +19,19 @@ class ZapScanOCR {
     'Y': '4',
     'y': '4',
     'G': '6',
+    'K': '6',
     'Z': '2',
     'a': '8',
+    'H': '4',
+    'W': '4',
+    'M': '4',
+    'N': '4',
+    'A': '4',
+    'R': '2',
+    'e': '2',
+    'E': '8',
+    'T': '7',
+    'U': '0',
   };
 
   static const _ambiguous = <String, List<String>>{
@@ -29,15 +40,11 @@ class ZapScanOCR {
   };
 
   /// Parses the [rawText] to find a valid 14- to 16-digit credit card number sequence.
-  /// 
+  ///
   /// Returns a list of sets, where each set contains the possible digits for that position.
   /// Returns `null` if no valid card pattern is found.
   static List<Set<String>>? findCardSlots(String rawText) {
-    final lines = rawText
-        .split('\n')
-        .map((l) => l.trim())
-        .where((l) => l.isNotEmpty)
-        .toList();
+    final lines = rawText.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
 
     // Horizontal
     // XXXX XXXX XXXX XXXX
@@ -46,6 +53,9 @@ class ZapScanOCR {
     for (final line in lines) {
       final result = _matchPattern(line);
       if (result != null) return result;
+      // Fallback: try lenient line match (no spaces)
+      final lenientResult = _matchLenient(line);
+      if (lenientResult != null) return lenientResult;
     }
 
     // Grid (2 × 2)
@@ -53,10 +63,7 @@ class ZapScanOCR {
     for (var i = 0; i < lines.length - 1; i++) {
       final s1 = _toSlots(lines[i]);
       final s2 = _toSlots(lines[i + 1]);
-      if (s1.length >= 7 &&
-          s1.length <= 9 &&
-          s2.length >= 7 &&
-          s2.length <= 9) {
+      if (s1.length >= 7 && s1.length <= 9 && s2.length >= 7 && s2.length <= 9) {
         final result = _searchByLength([...s1, ...s2]);
         if (result != null) return result;
       }
@@ -81,16 +88,13 @@ class ZapScanOCR {
         final firstIsOne = slots.first.contains('1');
         final lastIsOne = slots.last.contains('1');
         if (lastIsOne && !firstIsOne) {
-          quads.add(slots.sublist(
-              0, 4)); // strip trailing bar, e.g. "12341" -> "1234"
+          quads.add(slots.sublist(0, 4)); // strip trailing bar, e.g. "12341" -> "1234"
         } else if (firstIsOne && !lastIsOne) {
-          quads.add(
-              slots.sublist(1)); // strip leading bar, e.g. "11234" -> "1234"
+          quads.add(slots.sublist(1)); // strip leading bar, e.g. "11234" -> "1234"
         }
       } else if (slots.length == 6) {
         if (slots.first.contains('1') && slots.last.contains('1')) {
-          quads.add(
-              slots.sublist(1, 5)); // strip both bars, e.g. "112341" -> "1234"
+          quads.add(slots.sublist(1, 5)); // strip both bars, e.g. "112341" -> "1234"
         }
       }
     }
@@ -136,12 +140,7 @@ class ZapScanOCR {
       for (var b = a + 1; b < n - 2; b++) {
         for (var c = b + 1; c < n - 1; c++) {
           for (var d = c + 1; d < n; d++) {
-            final combined = [
-              ...quads[a],
-              ...quads[b],
-              ...quads[c],
-              ...quads[d]
-            ];
+            final combined = [...quads[a], ...quads[b], ...quads[c], ...quads[d]];
             final result = combined.map((s) => s.toSet()).toList();
             if (_isValidPrefix(result)) return result;
           }
@@ -154,10 +153,15 @@ class ZapScanOCR {
   /// Network-length validation. A 15-digit card claiming to be Visa
   /// (starting with 4) is actually just a 16-digit card that OCR dropped a digit from.
   static bool _isValidPrefix(List<Set<String>> slots) {
-    if (slots.length < 14 || slots.length > 16) return false;
+    if (slots.length < 13 || slots.length > 16) return false;
 
     final firstOpt = slots[0];
     final secondOpt = slots[1];
+
+    if (slots.length == 13) {
+      // Visa (Old): 4
+      return firstOpt.contains('4');
+    }
 
     if (slots.length == 15) {
       // Amex: 34, 37
@@ -194,31 +198,46 @@ class ZapScanOCR {
     var m = RegExp('($d{4})\\s+($d{4})\\s+($d{4})\\s+($d{4})').firstMatch(line);
     if (m != null) {
       final resRaw = '${m[1]}${m[2]}${m[3]}${m[4]}';
-      final res =
-          resRaw.split('').map((ch) => _toSlots(ch).first.toSet()).toList();
+      final res = resRaw.split('').map((ch) => _toSlots(ch).first.toSet()).toList();
       if (_isValidPrefix(res)) return res;
     }
     // 4-6-5    (15 digits: Amex)
     m = RegExp('($d{4})\\s+($d{6})\\s+($d{5})').firstMatch(line);
     if (m != null) {
       final resRaw = '${m[1]}${m[2]}${m[3]}';
-      final res =
-          resRaw.split('').map((ch) => _toSlots(ch).first.toSet()).toList();
+      final res = resRaw.split('').map((ch) => _toSlots(ch).first.toSet()).toList();
       if (_isValidPrefix(res)) return res;
     }
     // 4-6-4    (14 digits: Diners Club)
     m = RegExp('($d{4})\\s+($d{6})\\s+($d{4})').firstMatch(line);
     if (m != null) {
       final resRaw = '${m[1]}${m[2]}${m[3]}';
-      final res =
-          resRaw.split('').map((ch) => _toSlots(ch).first.toSet()).toList();
+      final res = resRaw.split('').map((ch) => _toSlots(ch).first.toSet()).toList();
       if (_isValidPrefix(res)) return res;
     }
     return null;
   }
 
+  /// Lenient matching that doesn't care about spaces.
+  /// It just extracts all digit-like characters and looks for a valid prefix.
+  static List<Set<String>>? _matchLenient(String line) {
+    final slots = _toSlots(line);
+    // Allow for 13..16 digit sequences even with noise in the middle.
+    // However, if we find a long sequence, give preference to it.
+    for (final len in [16, 15, 14, 13]) {
+       if (slots.length < len) continue;
+       
+       // Sliding window in case of prefixes like "No. 4000..."
+       for (var i = 0; i <= slots.length - len; i++) {
+          final sub = slots.sublist(i, i + len).map((s) => s.toSet()).toList();
+          if (_isValidPrefix(sub)) return sub;
+       }
+    }
+    return null;
+  }
+
   /// Attempts to find an expiration date in the raw text.
-  /// 
+  ///
   /// Looks for patterns like MM/YY, MM\YY, MM|YY, MM-YY, MM/YYYY, etc.
   /// Also handles common OCR mistakes like `l` or `1` or `7` instead of `/`.
   static String? findExpiryDate(String rawText) {
@@ -229,7 +248,7 @@ class ZapScanOCR {
     // M: 01-12
     // Sep: / \ - |  (allow space around it, or 'l', '1', '7' as common mistakes)
     // Y: 20-40 (for YY) or 2020-2040 (for YYYY)
-    
+
     // Pattern looking for 01-12 followed by a separator and 2 or 4 digits.
     // It captures month in group 1, year in group 2.
     // Separator could be non-alphanumeric, or a space, or common misreads like 'L', 'l', '1', '7', 'I', 'i'
@@ -245,7 +264,8 @@ class ZapScanOCR {
           int? year = int.tryParse(yearStr);
           if (year != null) {
             // Validate year constraints
-            if (yearStr.length == 2 && year >= 24 && year <= 49) { // 2024 to 2049
+            if (yearStr.length == 2 && year >= 24 && year <= 49) {
+              // 2024 to 2049
               return '$monthStr/$yearStr';
             } else if (yearStr.length == 4 && year >= 2024 && year <= 2049) {
               return '$monthStr/${yearStr.substring(2)}'; // Normalize to MM/YY
@@ -275,8 +295,8 @@ class ZapScanOCR {
     return null;
   }
 
-  /// Attempts to find a CVV (3 or 4 digits). 
-  /// 
+  /// Attempts to find a CVV (3 or 4 digits).
+  ///
   /// Excludes chunks that are identical to segments of the [knownCardNumber].
   static String? findCvv(String rawText, String? knownCardNumber) {
     final lines = rawText.split('\n');
@@ -296,7 +316,7 @@ class ZapScanOCR {
           }
 
           // Rule out sizes > 4 (already handled by regex \b)
-          // Look for keywords nearby in the same line? 
+          // Look for keywords nearby in the same line?
           // Usually just blindly returning a 3-4 digit string that passes rules is "best effort".
           // We can prioritize it if we see "CVV" or "CVC".
           final upperLine = line.toUpperCase();
@@ -310,14 +330,14 @@ class ZapScanOCR {
           // To reduce false positives, we might only accept 4 digits if AMEX, 3 digits otherwise?
           // Since it's best effort, we will just return it.
           if (candidate.length == 3 || candidate.length == 4) {
-             // Exclude obvious years like 2024, 2025
-             if (candidate.length == 4) {
-                final cInt = int.tryParse(candidate);
-                if (cInt != null && cInt >= 2000 && cInt <= 2050) {
-                   continue; // likely a year
-                }
-             }
-             return candidate;
+            // Exclude obvious years like 2024, 2025
+            if (candidate.length == 4) {
+              final cInt = int.tryParse(candidate);
+              if (cInt != null && cInt >= 2000 && cInt <= 2050) {
+                continue; // likely a year
+              }
+            }
+            return candidate;
           }
         }
       }

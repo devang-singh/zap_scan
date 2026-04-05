@@ -1,0 +1,111 @@
+Looking at your Swift file, I can see the problem immediately.
+
+**`requestHandler.perform()` is called on the main thread synchronously**, and the Vision completion callback fires inline — also on the main thread. This works, but the real issue is the **`imagePath` flow on simulator**.
+
+When `image_picker` returns an image on iOS simulator, the path it gives you looks like this:
+
+```
+/private/var/mobile/Containers/.../tmp/image_picker_xxx.jpg
+```
+
+But Vision's `VNImageRequestHandler(url:)` is strict — if the file is a **HEIC, or the path has been sandboxed/temp-copied**, Vision silently fails to decode it and returns zero observations. No error, just empty results. That's exactly your "No recognizable data found" symptom.
+
+**The fix — convert the image to a `CIImage` or `CGImage` explicitly instead of trusting the URL path:**
+
+```swift
+private func recognizeText(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard let args = call.arguments as? [String: Any] else {
+        result(FlutterError(code: "invalid_args", message: "Missing arguments", details: nil))
+        return
+    }
+
+    DispatchQueue.global(qos: .userInitiated).async {
+        let requestHandler: VNImageRequestHandler?
+
+        if let imagePath = args["imagePath"] as? String {
+            // Don't trust URL directly — load via CIImage which handles
+            // HEIC, JPEG, simulator sandbox paths, all formats correctly
+            guard let ciImage = CIImage(contentsOf: URL(fileURLWithPath: imagePath)) else {
+                result(FlutterError(code: "image_error", 
+                                    message: "Cannot load image at path: \(imagePath)", 
+                                    details: nil))
+                return
+            }
+            requestHandler = VNImageRequestHandler(ciImage: ciImage, options: [:])
+        } else {
+            guard let flutterData = args["bytes"] as? FlutterStandardTypedData,
+                  let width = args["width"] as? Int,
+                  let height = args["height"] as? Int else {
+                result(FlutterError(code: "invalid_args", 
+                                    message: "Missing image bytes or dimensions", 
+                                    details: nil))
+                return
+            }
+
+            let bitmapInfo = CGBitmapInfo(rawValue: 
+                CGImageAlphaInfo.premultipliedFirst.rawValue | 
+                CGBitmapInfo.byteOrder32Little.rawValue)
+
+            guard let provider = CGDataProvider(data: flutterData.data as CFData),
+                  let cgImage = CGImage(
+                      width: width, height: height,
+                      bitsPerComponent: 8, bitsPerPixel: 32,
+                      bytesPerRow: width * 4,
+                      space: CGColorSpaceCreateDeviceRGB(),
+                      bitmapInfo: bitmapInfo,
+                      provider: provider,
+                      decode: nil, shouldInterpolate: false,
+                      intent: .defaultIntent) else {
+                result(FlutterError(code: "image_error", 
+                                    message: "Could not create CGImage from bytes", 
+                                    details: nil))
+                return
+            }
+            requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        }
+
+        let request = VNRecognizeTextRequest { (req, error) in
+            if let error = error {
+                result(FlutterError(code: "ocr_error", 
+                                    message: error.localizedDescription, 
+                                    details: nil))
+                return
+            }
+            let text = (req.results as? [VNRecognizedTextObservation] ?? [])
+                .compactMap { $0.topCandidates(1).first?.string }
+                .joined(separator: "\n")
+            result(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        request.recognitionLevel = .accurate
+
+        do {
+            try requestHandler?.perform([request])
+        } catch {
+            result(FlutterError(code: "ocr_perform_error", 
+                                message: error.localizedDescription, 
+                                details: nil))
+        }
+    }
+}
+```
+
+Apply the same `CIImage(contentsOf:)` swap to `recognizeBarcode`.
+
+**Why `CIImage` instead of URL:**
+
+```
+URL path  →  Vision tries to decode directly  →  fails silently on HEIC/sandboxed paths
+CIImage   →  Core Image decodes first         →  handles all formats, gives Vision a CGImage
+```
+
+**Also add this debug line temporarily** to confirm the path is actually valid before you debug further:
+
+```swift
+if let imagePath = args["imagePath"] as? String {
+    let exists = FileManager.default.fileExists(atPath: imagePath)
+    NSLog("ZapScan: imagePath=\(imagePath) exists=\(exists)")
+    // ... rest of code
+}
+```
+
+If `exists=false` appears in the console, the issue is that `image_picker` is giving you a path to a file that's already been cleaned up — in which case you need to copy the bytes on the Dart side before calling `scanFromImage`.

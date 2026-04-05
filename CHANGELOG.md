@@ -1,3 +1,10 @@
+## 1.1.1
+
+*   **WASM Compatibility**: Removed all direct `dart:io` usage and replaced them with `defaultTargetPlatform` to support the new Dart WASM compiler on the Web.
+*   **Official SPM Support**: Added a `Package.swift` manifest and restructured the native code into a shared `apple` directory to provide first-class Swift Package Manager support for both iOS and macOS.
+*   **Up-to-Date Dependencies**: Bumped `camera` to `^0.12.0` and `google_mlkit_commons` to `^0.11.2` as recommended by pub.dev.
+*   **Improved Native macOS Support**: The Apple plugin now uses a shared codebase for iOS and macOS, enabling native OCR on macOS via the Vision framework when used directly.
+
 ## 1.1.0
 
 *   **Full Multi-platform Support**: Officially declared support for all 6 platforms (Android, iOS, Web, Windows, macOS, Linux).

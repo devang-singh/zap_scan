@@ -4,7 +4,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'zap_scan'
-  s.version          = '1.1.0'
+  s.version          = '1.1.1'
   s.summary          = 'High-precision card, barcode, and boarding pass scanner.'
   s.description      = <<-DESC
 A high-precision scanning engine for Flutter that extracts complex data from credit cards, barcodes, and boarding passes using native OCR and EMV NFC.
