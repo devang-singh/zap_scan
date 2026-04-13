@@ -10,13 +10,11 @@ void main() {
     "b529 bO00\nD000 I079\nMPi IN KA O P300476 1224", // Competitive Case (Card vs Noise)
   ];
 
-  print("Testing Luhn-Prioritized OCR Extraction...");
+  print("Testing Layout-Based OCR Extraction...");
   for (final s in samples) {
-    final slots = ZapScanOCR.findCardSlots(s);
-    if (slots != null) {
-      final res = slots.map((s) => s.first).join();
-      final isValid = ZapScanOCR.checkLuhn(res);
-      print("Source: '$s'\n -> Extracted: '$res' (Length: ${res.length}, Luhn: $isValid)");
+    final res = ZapScanOCR.extractCardNumber(s);
+    if (res != null) {
+      print("Source: '$s'\n -> Extracted: '$res' (Length: ${res.length})");
     } else {
       print("Source: '$s' -> FAILED");
     }

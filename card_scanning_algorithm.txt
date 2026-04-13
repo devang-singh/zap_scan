@@ -1,0 +1,245 @@
+There can be 4 different layouts of cards:
+
+1. Horizontal -> all numbers on same line
+This one is super-easy to read, not much complexity here
+
+2. Vertical -> 4 rows, each row has 1 chunk of 4 digits, i.e.
+xxxx
+xxxx
+xxxx
+xxxx
+
+3. Grid cards -> 2 rows, each row has 2 chunks of 4 digits each
+xxxx xxxx
+xxxx xxxx
+
+During OCR we get raw texs like:
+1. """
+Federal Bank
+40251
+Issued by
+8L001 D354by
+ scopia
+ 8548
+ Designed
+ 10/30
+ DATE
+"""
+correct answer: "4025 8600 0354 8548"
+How: pick up the potential card number details first
+"""
+40251
+8L001 D354by
+8548
+10/30
+"""
+
+then, build-up the card number:
+For above example we know that "40251" is the start of the card number
+and since all the card numbers are NOT present in a single line, we know that it's not a horizontal
+case. So, it can be either vertical or grid case.
+Now, we try to find which case is it ?
+from the potential card number details we see that there're 4 lines of card number chunks
+are captured, so it's a vertical case.
+Now, we try to build-up the card number:
+Also, for a vertical card it can be wrapped by side '|' or '1's.
+So, if all the chunks OR marjority of chunks contain '1', '|' at the starting or ending
+it's very high probability that we need to remove those first.
+
+So initial chunks will be:
+"""
+40251
+8l001 D354by
+5488
+"""
+we see that 4 chunks are : "40251", "8l001", "D354" and "5488"
+Now, we need to build-up the card number from these chunks.
+1st and 2nd chunk have 1 at their end, so very high probability that this '1' is just
+'|' in that UI of physical card, so we remove that, then 
+4 chunks become : "4025", "8l00", "D354" and "5488"
+Now, for alphabets, we find closest substitution of that character.
+After doing this:
+chunks become: "4025", "8600", "0354" and "5488"
+so final card number becomes: "4025 8600 0354 5488"
+
+2. """
+00000
+JAIN
+Valid
+YASH RAKESH
+upto
+Cyy
+b529 b000
+D000 079
+DISCeVER
+Issued by Federal Bank
+0/30
+Designed
+by Scapia
+320
+Diners Chub INTERNATIONAL
+pulse
+MPi N KA• P300476 1224
+"""
+correct answer: "6529 6000 0000 079" (no luhn)
+How: same steps as mentioned in (1), we find the potential card number details first
+which gives us:
+"""
+b529 b000
+D000 079
+0/30
+320
+"""
+now, since all the numbers are not present in same line, it's not a horizontal case.
+and we were able to find 2 rows of 2 chunks in each row, it 's a very high possibility 
+that it's a grid case.
+So, going forward with grid case, we find that, these 2 rows:
+"""
+b529 b000
+D000 079
+"""
+can form card number.
+
+So, the final card number after replacing alphabets with closest numbers:
+"6529 0000 0000 079"
+Now, here we don't care if it's valid or not, we just return this string. It's GOOD ENOUGH
+to return this answer.
+Luhn check by default is not required. We'll expose a bool field to enable/disable it
+BUT by default it'll be DISABLED.
+
+
+3. """
+Issued by
+Federal Bank
+40291
+8L001
+Designed
+by Scopia
+0541 8548
+10/30
+DATE
+107
+BECURTY
+CODL
+"""
+correct answer: "4029 8600 0541 8548"
+How: Same as (1) & (2)
+we filter out potential card number details:
+"""
+40291
+8L001
+0541 8548
+"""
+It's a vertical card case, so we form card number like: "4029 8600 0541 8548"
+
+
+4. """
+4712|
+27001
+315 6|
+|4669
+598
+03/31
+MANAGED BY
+Une
+"""
+correct answer: "4712 2700 3156 4669"
+How: again from the above examples, we see find that it's a vertical card case
+so, we filter out potential card number details:
+"""
+4712|
+27001
+315 6|
+|4669
+"""
+
+we then remove endenclosing bars ('|' or can be '1's also)
+after that:
+"""
+4712
+2700
+3156
+4669
+""" 
+so, final card number becomes: "4712 2700 3156 4669"
+
+
+Some open points worth discussing:
+
+1. How do we approach this ? Layer by Layer ?
+I mean from ample amount of frame data we figure out concrete details and 
+finalise our card details
+
+We can do mathematical modelling to pin-pointedly approach this problem ?
+Can we make us of some kind of 'static' stored data of correct mappings ? I mean to 
+say some kind of minimal low space 'model' we can maintain in the repo which'll improve the 
+accuracy ?
+
+
+
+AMBIGUITY:
+1. correct card number : "4712270031564669"
+raw text from OCR: """
+4712|
+2700
+315 6|
+4669
+03/31
+598
+card
+"""
+
+card number which result returned: "4712270031546690"
+
+So, as we can see in raw text:
+the chunks are - "4712|", "2700", "315 6|", "4669"
+so final card number should become: "4712270031564669"
+
+
+2. see this .. this is the result of uploading a card from gallery.
+as you can see the returned card number: 
+"8548030107000845"
+is different from what we buildup from raw string
+Raw: """
+4025 Issued by
+TBLO0
+JD354|
+8548
+EXP,
+DATE
+SECURITY
+CODE
+10/30
+107
+VISA
+Signature
+...
+"""
+
+3. from raw string we'd extract out:
+"""
+4025 Issued by
+TBLO0
+JD354|
+8548
+"""
+and then, we'd get:
+4025 8600 0354 8548
+How ? 
+Since this is a vertical card case, so we'll first try to find the enclosing bar patterns (card numbers are written in enclosed format aurrounded by vertical lines)
+
+Now, OCR is confusing these vertical lines for 'T', 'J' and row 2 and 3 BUT since we got a '|' at the end of row 2 chunk so we're now 'highly confident' that this is a vertical card case WITH enclosing bars ... SO, we remove J and T from row 2 and 3 as there's very high chance that they're nothing more that a vertical bar (they're connected in physical card UI, so it can mismatch it to 'T' shaped or 'J' shaped)
+
+so after this final set becomes:
+"""
+4025
+BLO0
+D354
+8548
+"""
+SO, final card number: "4025, 8600, 0354 8548"
+
+
+
+
+3. 

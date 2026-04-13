@@ -29,7 +29,10 @@ class _ZapScanExampleState extends State<ZapScanExample> {
         setState(() {
           _isScanning = false;
           if (result is ZapCardResult) {
-            _status = "💳 Credit Card\nNumber: ${result.cardNumber}\nExpiry: ${result.expiryDate ?? 'N/A'}\nCVV: ${result.cvv ?? 'N/A'}";
+            _status = "Credit Card\nNumber: ${result.cardNumber}\n"
+                "Expiry: ${result.expiryDate ?? 'N/A'}\n"
+                "CVV: ${result.cvv ?? 'N/A'}"
+                "Raw: ${result.rawText}";
           } else if (result is FlightTicketResult) {
             _status = "✈️ Boarding Pass\n"
                 "Name: ${result.passengerName ?? 'N/A'}\n"
@@ -107,119 +110,123 @@ class _ZapScanExampleState extends State<ZapScanExample> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Zap Scan Example'),
-        elevation: 2,
-        backgroundColor: Colors.deepPurple,
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: Icon(_controller.showDebugOverlay ? Icons.bug_report : Icons.bug_report_outlined),
-            onPressed: () {
-              setState(() {
-                _controller.showDebugOverlay = !_controller.showDebugOverlay;
-              });
-            },
-            tooltip: "Toggle OCR Debug Overlay",
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          // THE SCANNER WIDGET
-          if (_isScanning)
-            Expanded(
-              child: Stack(
-                children: [
-                  ZapScanWidget(controller: _controller),
-                  // SHOW REAL-TIME GUESSED CARD
-                  ListenableBuilder(
-                    listenable: _controller,
-                    builder: (context, _) {
-                      if (_controller.guessedCard == null) return const SizedBox.shrink();
-                      return Positioned(
-                        top: 40,
-                        left: 20,
-                        right: 20,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-                          decoration: BoxDecoration(
-                            color: Colors.black54,
-                            borderRadius: BorderRadius.circular(8),
+    return SafeArea(
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          title: const Text('Zap Scan Example'),
+          elevation: 2,
+          backgroundColor: Colors.white,
+          foregroundColor: Colors.black,
+          actions: [
+            IconButton(
+              icon: Icon(_controller.showDebugOverlay ? Icons.bug_report : Icons.bug_report_outlined),
+              onPressed: () {
+                setState(() {
+                  _controller.showDebugOverlay = !_controller.showDebugOverlay;
+                });
+              },
+              tooltip: "Toggle OCR Debug Overlay",
+            ),
+          ],
+        ),
+        body: Column(
+          children: [
+            if (_isScanning)
+              Expanded(
+                child: Stack(
+                  children: [
+                    ZapScanWidget(controller: _controller),
+                    ListenableBuilder(
+                      listenable: _controller,
+                      builder: (context, _) {
+                        if (_controller.guessedCard == null) return const SizedBox.shrink();
+                        return Positioned(
+                          top: 40,
+                          left: 20,
+                          right: 20,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              "Detecting: ${_controller.guessedCard}",
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                            ),
                           ),
-                          child: Text(
-                            "Detecting: ${_controller.guessedCard}",
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                          ),
+                        );
+                      },
+                    ),
+                    Positioned(
+                      bottom: 20,
+                      left: 0,
+                      right: 0,
+                      child: Center(
+                        child: ElevatedButton(
+                          onPressed: () => setState(() => _isScanning = false),
+                          style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+                          child: const Text("Cancel"),
                         ),
-                      );
-                    },
-                  ),
-                  Positioned(
-                    bottom: 20,
-                    left: 0,
-                    right: 0,
-                    child: Center(
-                      child: ElevatedButton(
-                        onPressed: () => setState(() => _isScanning = false),
-                        style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
-                        child: const Text("Cancel"),
                       ),
+                    ),
+                  ],
+                ),
+              )
+            else
+              Expanded(
+                child: Center(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(24.0),
+                    child: Text(
+                      _status,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: Colors.white),
+                    ),
+                  ),
+                ),
+              ),
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          _status = "Scanning...";
+                          _isScanning = true;
+                        });
+                      },
+                      icon: const Icon(Icons.camera_alt),
+                      label: const Text("Camera"),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: _pickAndScan,
+                      icon: const Icon(Icons.image),
+                      label: const Text("Upload File"),
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: _readNfc,
+                      icon: const Icon(Icons.nfc),
+                      label: const Text("NFC"),
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white),
                     ),
                   ),
                 ],
               ),
-            )
-          else
-            Expanded(
-              child: Center(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.all(24.0),
-                  child: Text(_status, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
-                ),
-              ),
             ),
-
-          // BUTTONS
-          Container(
-            padding: const EdgeInsets.all(20.0),
-            decoration: BoxDecoration(
-              color: Colors.grey[100],
-              border: Border(top: BorderSide(color: Colors.grey[300]!)),
-            ),
-            child: Wrap(
-              alignment: WrapAlignment.center,
-              spacing: 12,
-              runSpacing: 12,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: () {
-                    setState(() {
-                      _status = "Scanning...";
-                      _isScanning = true;
-                    });
-                  },
-                  icon: const Icon(Icons.camera_alt),
-                  label: const Text("Live Cam"),
-                ),
-                ElevatedButton.icon(
-                  onPressed: _pickAndScan,
-                  icon: const Icon(Icons.image),
-                  label: const Text("Upload File"),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white),
-                ),
-                ElevatedButton.icon(
-                  onPressed: _readNfc,
-                  icon: const Icon(Icons.nfc),
-                  label: const Text("Read NFC"),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white),
-                ),
-              ],
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

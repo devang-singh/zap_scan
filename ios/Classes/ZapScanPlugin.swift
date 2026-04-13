@@ -115,8 +115,12 @@ public class ZapScanPlugin: NSObject, FlutterPlugin {
                 return
             }
 
+            // Sort top-to-bottom. Vision's coordinate system has origin at bottom-left,
+            // so top of image = higher Y. Descending Y gives reading order.
+            let sortedObservations = observations.sorted { $0.boundingBox.origin.y > $1.boundingBox.origin.y }
+
             var extractedText = ""
-            for observation in observations {
+            for observation in sortedObservations {
                 guard let topCandidate = observation.topCandidates(1).first else { continue }
                 extractedText += topCandidate.string + "\n"
             }

@@ -11,7 +11,7 @@
 /// // ... implementation details ...
 /// ```
 ///
-/// For headless use, call [EmvNfcService.scanCard] or [CardScannerOCR.findCardSlots] directly.
+/// For headless use, call [EmvNfcService.scanCard] or [ZapScanOCR.extractCardNumber] directly.
 library zap_scan;
 
 export 'src/nfc/emv_card.dart';

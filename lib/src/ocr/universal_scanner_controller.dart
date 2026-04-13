@@ -144,9 +144,9 @@ class UniversalScannerController extends ChangeNotifier {
 
   static const int _requiredConsensus = 3;
   static const int _historyLimit = 15; // Track last 15 valid frames
-  
-  // Frequency map for each of the 16 digit positions
-  final List<Map<String, int>> _digitFrequency = List.generate(16, (_) => {});
+
+  // Buffer tracking the most recent candidate strings from valid frames
+  final List<String> _candidateHistory = [];
   int _totalValidFrames = 0;
   String? _guessedCard;
 
@@ -256,9 +256,25 @@ class UniversalScannerController extends ChangeNotifier {
     _isBusy = true;
 
     try {
+      // Consolidate all successful OCR results into a candidate list for absorption consensus
+      final candidateMatches = <String>[];
+      String? bestRawText;
+      String? bestExpiry;
+      String? bestCvv;
+
       // 1. Pass 1: Try as-is (using Native Path for best OS-level EXIF support)
-      var result = await _scanSinglePass(imageFile: imageFile);
-      if (result != null && result is! ScanErrorResult) return result;
+      var nativeResult = await _scanSinglePass(imageFile: imageFile);
+      if (nativeResult != null && nativeResult is ZapCardResult) {
+        bestRawText = nativeResult.rawText;
+        if (nativeResult.expiryDate != null) bestExpiry = nativeResult.expiryDate;
+        if (nativeResult.cvv != null) bestCvv = nativeResult.cvv;
+        candidateMatches.add(nativeResult.cardNumber);
+      } else if (nativeResult != null && nativeResult is BarcodeResult) {
+        // Boarding passes / Barcodes are deterministically accurate, return immediately
+        return nativeResult;
+      } else if (nativeResult != null && nativeResult is ScanErrorResult) {
+        // If a platform error occurs natively, we can still fall back to image bytes processing below
+      }
 
       // 2. Pass 2: Try 180° Rotation (using Native Path if possible, or Manual Bytes)
       // Since native recognizeText(imagePath) doesn't support rotation arg easily for files,
@@ -271,56 +287,77 @@ class UniversalScannerController extends ChangeNotifier {
       final height = image.height;
 
       final data = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
-      if (data == null) return result;
+      if (data == null) return nativeResult;
       final rawBytes = data.buffer.asUint8List();
 
-      // Convert to luminance once for all subsequent passes
-      final lum = Uint8List(width * height);
-      for (int i = 0; i < width * height; i++) {
+      // Convert to NV21 (Luma + padded Chroma) for all subsequent byte-level passes
+      final ySize = width * height;
+      final uvSize = ySize ~/ 2;
+      final nv21 = Uint8List(ySize + uvSize);
+
+      // 1. Fill Y-Plane
+      for (int i = 0; i < ySize; i++) {
         final o = i * 4;
-        lum[i] = ImageProcessing.luminance(rawBytes[o], rawBytes[o + 1], rawBytes[o + 2]);
+        nv21[i] = ImageProcessing.luminance(rawBytes[o], rawBytes[o + 1], rawBytes[o + 2]);
       }
 
-      // Consolidate all successful OCR results into a frequency map to find the best consensus
-      final occurrences = <String, int>{};
-      final results = <String, ZapCardResult>{};
+      // 2. Fill UV-Plane with neutral 128 (grayscale chrominance)
+      // Required by ML Kit because NV21 is strictly monitored by image parsers.
+      nv21.fillRange(ySize, ySize + uvSize, 128);
 
+      // Prepare generic luminance passes
+
+      // Static gallery images rarely need heavy edge detection.
+      // Limit to none + grayscale for max speed (4 seconds -> ~1.5 sec)
       for (final strategy in [
         EnhancementStrategy.none,
         EnhancementStrategy.grayscaleHiContrast,
-        EnhancementStrategy.sharpen,
-        EnhancementStrategy.sobelEdge,
       ]) {
-        // Prepare luminance buffer for this strategy
-        final workLum = Uint8List.fromList(lum);
+        // Prepare base luminance for this strategy
+        // Prepare base luminance for this strategy
+        final processLum = Uint8List.view(nv21.buffer, 0, ySize); // Modify only Y plane
+        final workNv21 = Uint8List.fromList(nv21);
+
         if (strategy != EnhancementStrategy.none) {
+          final workLum = Uint8List.view(workNv21.buffer, 0, ySize);
           _enhancerService.processLuminance(workLum, width, height, strategy);
         }
 
         // Try 0° and 180° for each enhancement
         for (final rot in [0, 180]) {
-          final res = await _scanSinglePass(bytes: workLum, width: width, height: height, rotation: rot);
+          final res = await _scanSinglePass(bytes: workNv21, width: width, height: height, rotation: rot);
           if (res != null && res is ZapCardResult) {
-            final num = res.cardNumber;
-            final isLuhnValid = ZapScanOCR.checkLuhn(num);
-            
-            // Solidify: Luhn-valid results get a massive weight boost (100x)
-            // Probabilistic: Non-valid results still counted (weight 1)
-            final weight = isLuhnValid ? 100 : 1;
-            
-            occurrences[num] = (occurrences[num] ?? 0) + weight;
-            results[num] = res;
+            final numStr = res.cardNumber;
+            bestRawText = res.rawText;
+            if (res.expiryDate != null) bestExpiry = res.expiryDate;
+            if (res.cvv != null) bestCvv = res.cvv;
+
+            candidateMatches.add(numStr);
+
+            // EARLY ABORT: If we mathematically validated the Luhn check
+            // natively right here, exit the entire enhancement loop instantly!
+            // No need to run 4 more passes and wait 2 seconds.
+            if (ZapScanOCR.luhnCheck(numStr)) {
+              return res;
+            }
           }
         }
       }
 
-      // 3. Consensus Winner: Pick the card number that appeared most often across the 8 passes
-      if (occurrences.isNotEmpty) {
-        final winnerNum = occurrences.entries.reduce((a, b) => a.value >= b.value ? a : b).key;
-        return results[winnerNum];
+      // 3. Consensus Winner: Find the highest scored absorbed candidate
+      if (candidateMatches.isNotEmpty) {
+        final stableDigits = _performSubsequenceConsensus(candidateMatches);
+        if (stableDigits != null && stableDigits.length >= 13) {
+          return ZapCardResult(
+            cardNumber: stableDigits,
+            expiryDate: bestExpiry,
+            cvv: bestCvv,
+            rawText: bestRawText ?? "",
+          );
+        }
       }
 
-      return result;
+      return nativeResult is ScanErrorResult ? nativeResult : null;
     } catch (e) {
       if (e is services.PlatformException) {
         return ScanErrorResult(
@@ -354,19 +391,19 @@ class UniversalScannerController extends ChangeNotifier {
         try {
           List<Map<String, dynamic>>? barcodeResults;
           if (imageFile != null) {
-             if (barcodeDelegate != null) {
-               barcodeResults = await barcodeDelegate!(imageFile);
-             } else {
-               barcodeResults = await ZapScanPlugin.recognizeBarcode(imagePath: imageFile.path);
-             }
+            if (barcodeDelegate != null) {
+              barcodeResults = await barcodeDelegate!(imageFile);
+            } else {
+              barcodeResults = await ZapScanPlugin.recognizeBarcode(imagePath: imageFile.path);
+            }
           } else {
-             barcodeResults = await ZapScanPlugin.recognizeBarcode(
-               bytes: bytes!,
-               width: width!,
-               height: height!,
-               rotation: rotation,
-               format: 35, // 35 = YUV_420_888 (Grayscale Y-plane)
-             );
+            barcodeResults = await ZapScanPlugin.recognizeBarcode(
+              bytes: bytes!,
+              width: width!,
+              height: height!,
+              rotation: rotation,
+              format: 17, // 17 = NV21 format
+            );
           }
 
           if (barcodeResults != null && barcodeResults.isNotEmpty) {
@@ -379,7 +416,7 @@ class UniversalScannerController extends ChangeNotifier {
                   if (imageFile != null) {
                     rawText = ocrDelegate != null ? await ocrDelegate!(imageFile) : await ZapScanPlugin.recognizeText(imagePath: imageFile.path);
                   } else {
-                    rawText = await ZapScanPlugin.recognizeText(bytes: bytes!, width: width!, height: height!, rotation: rotation);
+                    rawText = await ZapScanPlugin.recognizeText(bytes: bytes!, width: width!, height: height!, rotation: rotation, format: 17);
                   }
                 } catch (_) {}
               }
@@ -401,19 +438,18 @@ class UniversalScannerController extends ChangeNotifier {
         if (imageFile != null) {
           text = ocrDelegate != null ? await ocrDelegate!(imageFile) : await ZapScanPlugin.recognizeText(imagePath: imageFile.path);
         } else {
-          text = await ZapScanPlugin.recognizeText(bytes: bytes!, width: width!, height: height!, rotation: rotation);
+          text = await ZapScanPlugin.recognizeText(bytes: bytes!, width: width!, height: height!, rotation: rotation, format: 17);
         }
 
         if (text != null && text.isNotEmpty) {
-          var cardSlots = ZapScanOCR.findCardSlots(text);
-          if (cardSlots != null) {
-            final tempCardNum = cardSlots.map((s) => s.first).join();
+          var cardCandidate = ZapScanOCR.extractCardNumberFromUpload(text);
+          if (cardCandidate != null) {
             String? expiry;
             String? cvv;
             if (scanExpiryDate) expiry = ZapScanOCR.findExpiryDate(text);
-            if (scanCvv) cvv = ZapScanOCR.findCvv(text, tempCardNum);
+            if (scanCvv) cvv = ZapScanOCR.findCvv(text, cardCandidate);
             return ZapCardResult(
-              cardNumber: tempCardNum,
+              cardNumber: cardCandidate,
               expiryDate: expiry,
               cvv: cvv,
               rawText: text,
@@ -445,9 +481,7 @@ class UniversalScannerController extends ChangeNotifier {
     _probableExpiry = null;
     _probableCvv = null;
     _totalValidFrames = 0;
-    for (var f in _digitFrequency) {
-      f.clear();
-    }
+    _candidateHistory.clear();
     _expiryVotes.clear();
     _cvvVotes.clear();
     _barcodeConsensusFrames = 0;
@@ -522,10 +556,10 @@ class UniversalScannerController extends ChangeNotifier {
         dump.add('=== text ===');
         dump.add(filteredText.isEmpty ? '(empty)' : filteredText);
 
-        var cardSlots = ZapScanOCR.findCardSlots(filteredText);
+        var cardCandidate = ZapScanOCR.extractCardNumber(filteredText);
 
         // Retry with 180° rotation in case the card is held upside down.
-        if (cardSlots == null) {
+        if (cardCandidate == null) {
           final rotDeg180 = (rotDeg + 180) % 360;
           final inputImage180 = _enhancerService.convertStandard(image, rotDeg180);
           if (inputImage180 != null && inputImage180.bytes != null) {
@@ -544,9 +578,9 @@ class UniversalScannerController extends ChangeNotifier {
                 flippedText,
               ];
               for (final candidate in candidates) {
-                final slots = ZapScanOCR.findCardSlots(candidate);
-                if (slots != null) {
-                  cardSlots = slots;
+                final extractCand = ZapScanOCR.extractCardNumber(candidate);
+                if (extractCand != null) {
+                  cardCandidate = extractCand;
                   filteredText = candidate;
                   dump.add('=== retried at 180° ===');
                   dump.add(candidate);
@@ -567,15 +601,14 @@ class UniversalScannerController extends ChangeNotifier {
         if (_finalConfirmedResult == null) {
           String? expiry;
           String? cvv;
-          if (cardSlots != null) {
-            final tempCardNum = cardSlots.map((s) => s.first).join();
+          if (cardCandidate != null) {
             if (scanExpiryDate) expiry = ZapScanOCR.findExpiryDate(filteredText);
-            if (scanCvv) cvv = ZapScanOCR.findCvv(filteredText, tempCardNum);
-            
-            _updateCardFrequency(cardSlots, expiry, cvv);
+            if (scanCvv) cvv = ZapScanOCR.findCvv(filteredText, cardCandidate);
+
+            _updateCardFrequency(cardCandidate, expiry, cvv);
           } else {
-             // Optional: slowly decay frequency if no card found to handle card swap
-             _decayFrequencies();
+            // Optional: slowly decay frequency if no card found to handle card swap
+            _decayFrequencies();
           }
         }
       }
@@ -624,94 +657,132 @@ class UniversalScannerController extends ChangeNotifier {
     }
   }
 
-  void _updateCardFrequency(List<Set<String>>? newSlots, String? newExpiry, String? newCvv) {
-    if (newSlots == null || newSlots.isEmpty) return;
+  void _updateCardFrequency(String? newCardNumber, String? newExpiry, String? newCvv) {
+    if (newCardNumber == null || newCardNumber.isEmpty) return;
 
     if (newExpiry != null) _expiryVotes[newExpiry] = (_expiryVotes[newExpiry] ?? 0) + 1;
     if (newCvv != null) _cvvVotes[newCvv] = (_cvvVotes[newCvv] ?? 0) + 1;
 
     // Align slots to 16 digits (right-aligned for now, as most cards are 16 or 15/14)
-    final offset = 16 - newSlots.length;
+    final offset = 16 - newCardNumber.length;
     if (offset < 0) return; // Should not happen with current OCR logic
 
-    // Cap the buffer to keep it fresh
     if (_totalValidFrames >= _historyLimit) {
-      for (var f in _digitFrequency) {
-        f.forEach((key, value) {
-           f[key] = (value * 0.8).floor(); // Decay old data
-        });
-      }
-      _totalValidFrames = (_totalValidFrames * 0.8).floor();
+      // Decay old data by removing the oldest entries instead of mathematically decaying
+      _candidateHistory.removeRange(0, _candidateHistory.length - (_historyLimit - 1));
+      _totalValidFrames = _candidateHistory.length;
     }
 
     _totalValidFrames++;
-    for (int i = 0; i < newSlots.length; i++) {
-      final pos = i + offset;
-      if (pos >= 16) break;
-      
-      for (final digit in newSlots[i]) {
-        _digitFrequency[pos][digit] = (_digitFrequency[pos][digit] ?? 0) + 1;
-      }
-    }
+    _candidateHistory.add(newCardNumber);
 
     _updateProbableCard();
 
     // Check if we have enough consensus to finalize
     // For finalization, we still want a "perfect" set of digits that pass Luhn
     if (_totalValidFrames >= _requiredConsensus && _probableCard != null) {
-       // Only finalize if the probable card has enough stable digits
-       // In fuzzy mode, we might finalize even if Luhn fails if we want "most accurate"
-       // but for the primary result, let's stick to Luhn or high stability.
-       
-       _finalConfirmedResult = ZapCardResult(
-          cardNumber: _probableCard!,
-          guessedCardNumber: _guessedCard,
-          expiryDate: _probableExpiry,
-          cvv: _probableCvv,
-          rawText: _rawText,
-        );
+      // Only finalize if the probable card has enough stable digits
+      // In fuzzy mode, we might finalize even if Luhn fails if we want "most accurate"
+      // but for the primary result, let's stick to Luhn or high stability.
 
-        onResultScanned?.call(_finalConfirmedResult!);
+      _finalConfirmedResult = ZapCardResult(
+        cardNumber: _probableCard!,
+        guessedCardNumber: _guessedCard,
+        expiryDate: _probableExpiry,
+        cvv: _probableCvv,
+        rawText: _rawText,
+      );
+
+      onResultScanned?.call(_finalConfirmedResult!);
     }
   }
 
   void _decayFrequencies() {
-    // If we haven't seen a card for many frames, reset.
-    // This allows the user to switch cards.
+    // If we haven't seen a card for a bit, reset buffer
     if (_totalValidFrames > 0) {
-      _totalValidFrames = 0; // Simple reset for now
-      for (var f in _digitFrequency) {
-        f.clear();
-      }
+      _totalValidFrames = 0;
+      _candidateHistory.clear();
       _probableCard = null;
       _guessedCard = null;
     }
   }
 
-  void _updateProbableCard() {
-    final List<String?> topDigits = List.generate(16, (i) {
-      if (_digitFrequency[i].isEmpty) return null;
-      return _digitFrequency[i].entries.reduce((a, b) => a.value > b.value ? a : b).key;
-    });
+  bool _isSubsequence(String sub, String full) {
+    if (sub.length >= full.length) return false;
+    int i = 0;
+    for (int j = 0; j < full.length && i < sub.length; j++) {
+      if (sub[i] == full[j]) {
+        i++;
+      }
+    }
+    return i == sub.length;
+  }
 
-    _guessedCard = topDigits.where((d) => d != null).join();
+  /// Calculates the best candidate via Subsequence Absorption Consensus
+  static String? _performSubsequenceConsensus(List<String> candidates) {
+    if (candidates.isEmpty) return null;
 
-    // For the "probable" (validated) card, we only pick digits that appeared in at least 
-    // 50% of the valid frames, and we need at least 13-16 digits.
-    final stableDigits = <String>[];
-    for (int i = 0; i < 16; i++) {
-      if (_digitFrequency[i].isEmpty) continue;
-      final best = _digitFrequency[i].entries.reduce((a, b) => a.value > b.value ? a : b);
-      if (best.value >= (_totalValidFrames / 2).ceil() && best.value >= 2) {
-        stableDigits.add(best.key);
-      } else {
-        // Gap in stabilization
-        break; 
+    final scores = <String, int>{};
+    for (final cand in candidates) {
+      scores[cand] = (scores[cand] ?? 0) + 1;
+    }
+
+    final absorbedScores = Map<String, int>.from(scores);
+
+    for (final a in scores.keys) {
+      for (final b in scores.keys) {
+        if (a == b) continue;
+        if (b.length > a.length) {
+          // We do a simple subsequence check. We want to be lenient enough:
+          // A missing digit OCR hallucination shouldn't destroy the score.
+          // If A is a perfect subsequence of B computationally:
+          int i = 0;
+          for (int j = 0; j < b.length && i < a.length; j++) {
+            if (a[i] == b[j]) {
+              i++;
+            }
+          }
+          if (i == a.length) {
+            // B absorbs A's score completely!
+            absorbedScores[b] = (absorbedScores[b] ?? 0) + (scores[a] ?? 0);
+          }
+        }
       }
     }
 
-    if (stableDigits.length >= 13) {
-      _probableCard = stableDigits.join();
+    // Find candidate with max absorbed score
+    var bestCand = absorbedScores.keys.first;
+    var maxScore = -1;
+    for (final entry in absorbedScores.entries) {
+      if (entry.value > maxScore || (entry.value == maxScore && entry.key.length > bestCand.length)) {
+        maxScore = entry.value;
+        bestCand = entry.key;
+      }
+    }
+
+    return bestCand;
+  }
+
+  void _updateProbableCard() {
+    _guessedCard = _candidateHistory.isNotEmpty ? _candidateHistory.last : null;
+
+    final stableBest = _performSubsequenceConsensus(_candidateHistory);
+
+    // If perfectly aligned string gets enough votes (or absorbed votes), we deem it probable
+    // In strict mode we'd require at least 50% hit rate:
+    if (stableBest != null) {
+      // Recalculate score subset for stability confirmation
+      int confirmScore = 0;
+      for (final cand in _candidateHistory) {
+        if (cand == stableBest || _isSubsequence(cand, stableBest)) {
+          confirmScore++;
+        }
+      }
+      if (confirmScore >= (_totalValidFrames / 2).ceil() && confirmScore >= 2) {
+        _probableCard = stableBest;
+      } else {
+        _probableCard = null;
+      }
     } else {
       _probableCard = null;
     }

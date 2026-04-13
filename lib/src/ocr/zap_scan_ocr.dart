@@ -48,206 +48,420 @@ class ZapScanOCR {
     return '[$chars]';
   }
 
-  /// Parses the [rawText] to find a valid 13- to 16-digit credit card number sequence.
-  static List<Set<String>>? findCardSlots(String rawText) {
+  /// Extracts the card number robustly using layout-based chunk inference.
+  static String? extractCardNumber(String rawText, {bool enableLuhn = false}) {
     final lines = rawText.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
 
-    // Pass 1: Strict Matching (Definite mappings only)
-    var result = _findInPass(lines, includeSpeculative: false);
-    if (result != null) return result;
+    // Valid characters for a chunk
+    final validChars = <String>{
+      ...List.generate(10, (i) => i.toString()),
+      ..._definiteDigits.keys,
+      ..._speculativeDigits.keys,
+      ..._ambiguous.keys,
+      '|'
+    };
 
-    // Pass 2: Speculative Matching (Include noisy mappings as fallback)
-    return _findInPass(lines, includeSpeculative: true);
-  }
+    final rawChunks = <String>[];
 
-  /// Helper to perform a full scanning pass over all layouts with a given mapping level.
-  static List<Set<String>>? _findInPass(List<String> lines, {required bool includeSpeculative}) {
-    final candidates = <List<_Slot>>[];
+    for (var line in lines) {
+      // Extract possible chunks from the line
+      // Split by spaces, or by 2 spaces?
+      // Grid chunks often have lots of spaces.
+      // We will look for sequences of valid characters.
 
-    // 1. Horizontal
-    for (final line in lines) {
-      final res = _matchPattern(line, includeSpeculative);
-      if (res != null) candidates.add(res);
+      // Also try to heal spaced digits (e.g. "315 6|") but NOT break separate chunks "0541 8548"
+      // If a line has exactly one space between valid blocks, it might be a single chunk spaced out,
+      // but usually chunks are space-separated.
 
-      final len = _matchLenient(line, includeSpeculative);
-      if (len != null) candidates.add(len);
-    }
-
-    // 2. Grid (2 × 2)
-    for (var i = 0; i < lines.length - 1; i++) {
-      final s1 = _toSlots(lines[i], includeSpeculative: includeSpeculative);
-      final s2 = _toSlots(lines[i + 1], includeSpeculative: includeSpeculative);
-      // Grid cards often have 8 digits per line (4-4), but OCR might drop characters.
-      // We allow 7-9 per line to be flexible.
-      if (s1.length >= 7 && s1.length <= 9 && s2.length >= 7 && s2.length <= 9) {
-        final res = _searchByLength([...s1, ...s2]);
-        if (res != null) candidates.add(res);
-      }
-    }
-
-    // 3. Vertical
-    final quads = <List<_Slot>>[];
-    for (final line in lines) {
-      final slots = _toSlots(line, includeSpeculative: includeSpeculative);
-      if (slots.length >= 4 && slots.length <= 6) {
-        // Vertical blocks (often 4 digits)
-        quads.add(slots.sublist(0, 4));
-      }
-    }
-    if (quads.length >= 4) {
-      final res = _searchVertical(quads);
-      if (res != null) candidates.add(res);
-    }
-
-    if (candidates.isEmpty) return null;
-
-    // Selection Algorithm:
-    // Confidence Score = (Count of Real Digits 0-9) - (Count of Mapped Letters)
-    int getScore(List<_Slot> cand) {
-      return cand.fold(0, (sum, s) => sum + (s.isOriginalDigit ? 1 : -1));
-    }
-
-    List<_Slot>? bestCand;
-    int bestScore = -999;
-    bool bestPassesLuhn = false;
-
-    for (final cand in candidates) {
-      final num = cand.map((s) => s.digits.first).join();
-      final score = getScore(cand);
-      final luhn = checkLuhn(num);
-
-      // Priority 1: Luhn-valid AND higher score
-      // Priority 2: Higher score (probabilistic fallback)
-      if (luhn && !bestPassesLuhn) {
-        // First Luhn valid one we find, set it as best
-        bestPassesLuhn = true;
-        bestScore = score;
-        bestCand = cand;
-      } else if (luhn == bestPassesLuhn) {
-        // Both pass Luhn or both fail Luhn, pick highest score
-        if (score > bestScore) {
-          bestScore = score;
-          bestCand = cand;
+      final words = line.split(RegExp(r'\s+'));
+      for (var word in words) {
+        // clean word by removing leading/trailing characters NOT in validChars
+        var cleanWord = word;
+        while (cleanWord.isNotEmpty && !validChars.contains(cleanWord[0])) {
+          cleanWord = cleanWord.substring(1);
         }
-      }
-    }
+        while (cleanWord.isNotEmpty && !validChars.contains(cleanWord[cleanWord.length - 1])) {
+          cleanWord = cleanWord.substring(0, cleanWord.length - 1);
+        }
 
-    return bestCand?.map((s) => s.digits.toSet()).toList();
-  }
+        // We consider chunks down to length 1. OCR sometimes spaces out a chunk e.g. "315 6|" -> "315" and "6|"
+        if (cleanWord.length >= 1 && cleanWord.length <= 19) {
+          // Ensure it's not a generic word mapped randomly.
+          // A real chunk should be mostly digits or mapped chars.
+          int origDigits = cleanWord.split('').where((c) => validChars.contains(c) && !['|', '[', ']', '{', '}'].contains(c)).length;
 
-  /// Convert a text line into a list of slots.
-  static List<_Slot> _toSlots(String line, {required bool includeSpeculative}) {
-    final slots = <_Slot>[];
-    for (final ch in line.split('')) {
-      final code = ch.codeUnitAt(0);
-      if (code >= 48 && code <= 57) {
-        slots.add(_Slot([ch], true));
-      } else if (_ambiguous.containsKey(ch)) {
-        slots.add(_Slot(List<String>.from(_ambiguous[ch]!), false));
-      } else if (_definiteDigits.containsKey(ch)) {
-        slots.add(_Slot([_definiteDigits[ch]!], false));
-      } else if (includeSpeculative && _speculativeDigits.containsKey(ch)) {
-        slots.add(_Slot([_speculativeDigits[ch]!], false));
-      }
-    }
-    return slots;
-  }
-
-  static List<_Slot>? _searchByLength(List<_Slot> slots) {
-    // Grid healing: allow 13-16 digits if it looks like a card
-    for (final len in [16, 15, 14, 13]) {
-      if (slots.length < len) continue;
-      final sub = slots.sublist(0, len);
-      if (_isValidPrefix(sub.map((s) => s.toSet()).toList())) return sub;
-    }
-    return null;
-  }
-
-  static List<_Slot>? _searchVertical(List<List<_Slot>> quads) {
-    final n = quads.length;
-    for (var a = 0; a < n - 3; a++) {
-      for (var b = a + 1; b < n - 2; b++) {
-        for (var c = b + 1; c < n - 1; c++) {
-          for (var d = c + 1; d < n; d++) {
-            final combined = [...quads[a], ...quads[b], ...quads[c], ...quads[d]];
-            if (_isValidPrefix(combined.map((s) => s.toSet()).toList())) return combined;
+          // It needs at least 1 true digit, or it could be noise like "by" that maps exclusively to digits
+          if (origDigits >= 1 || cleanWord.length > 13) {
+            rawChunks.add(cleanWord);
           }
         }
       }
     }
-    return null;
+
+    // Border Cleanup (Vertical Artifacts)
+    final cleanedChunks = <String>[];
+    final edgeArtifacts = {'|', '1', 'l', 'I', 'i'};
+    final verticalEdgeEncodings = {'T', 'J', 't', 'j', '[', ']', '{', '}'};
+
+    // Check if there are strong indicators of an enclosed vertical layout
+    bool enclosedLayout = rawChunks.any((c) => c.contains('|') || c.contains('[') || c.contains(']'));
+
+    for (var chunk in rawChunks) {
+      var c = chunk;
+
+      // Aggressive edge artifact stripping for enclosed layout matrices
+      if (enclosedLayout) {
+        while (c.isNotEmpty && (verticalEdgeEncodings.contains(c[0]) || c[0] == '|')) {
+          c = c.substring(1);
+        }
+        while (c.isNotEmpty && (verticalEdgeEncodings.contains(c[c.length - 1]) || c[c.length - 1] == '|')) {
+          c = c.substring(0, c.length - 1);
+        }
+      }
+
+      // Standard length 5/6 chunk edge smoothing
+      if (c.length == 5) {
+        if (edgeArtifacts.contains(c[c.length - 1])) {
+          c = c.substring(0, 4);
+        } else if (edgeArtifacts.contains(c[0])) {
+          c = c.substring(1);
+        }
+      } else if (c.length == 6) {
+        if (edgeArtifacts.contains(c[0]) && edgeArtifacts.contains(c[c.length - 1])) {
+          c = c.substring(1, 5);
+        }
+      }
+
+      if (c.isNotEmpty) {
+        cleanedChunks.add(c);
+      }
+    }
+
+    // Map cleaned chunks into their equivalent numeric representations securely
+    // Map cleaned chunks into their equivalent numeric representations securely
+    final mappedChunks = <String>[];
+    for (var chunk in cleanedChunks) {
+      var mappedStr = '';
+      int trueDigits = 0;
+      bool hasUnmappable = false;
+
+      for (int i = 0; i < chunk.length; i++) {
+        var char = chunk[i];
+        if (char.codeUnitAt(0) >= 48 && char.codeUnitAt(0) <= 57) {
+          mappedStr += char;
+          trueDigits++;
+        } else if (_definiteDigits.containsKey(char)) {
+          mappedStr += _definiteDigits[char]!;
+        } else if (_ambiguous.containsKey(char)) {
+          mappedStr += _ambiguous[char]!.first; // Camera uses greedy mapping for speed
+        } else if (_speculativeDigits.containsKey(char)) {
+          mappedStr += _speculativeDigits[char]!;
+        } else {
+          hasUnmappable = true; 
+        }
+      }
+      
+      // English Word Eraser: If the chunk contains ANY unmapped letter, it's just normal text.
+      if (hasUnmappable) continue;
+      
+      // Coincidence Eraser: If it contains NO actual numbers and is tiny (e.g. 'by' -> '64'), drop it.
+      if (trueDigits == 0 && mappedStr.length < 4) continue;
+
+      if (mappedStr.isNotEmpty) {
+          mappedChunks.add(mappedStr);
+      }
+    }
+
+    final candidates = <String, int>{};
+
+    void addCandidate(String str, List<int> chunkSizes) {
+      if (str.length < 13 || str.length > 16) return;
+
+      int score = 0;
+      if (_isValidBIN(str)) score += 50;
+
+      bool isPerfectLayout = false;
+      if (chunkSizes.length == 4 && chunkSizes[0] == 4 && chunkSizes[1] == 4 && chunkSizes[2] == 4 && chunkSizes[3] == 4) {
+        isPerfectLayout = true;
+        score += 2000;
+      } else if (chunkSizes.length == 3 && chunkSizes[0] == 4 && chunkSizes[1] == 6 && chunkSizes[2] == 5) {
+        isPerfectLayout = true;
+        score += 2000;
+      }
+
+      if (luhnCheck(str)) {
+        score += enableLuhn ? 1000 : 100;
+      }
+
+      if (str.length == 16) score += 30; // Standard Visa/MC/Disc length
+      if (str.length == 15 && (str.startsWith('34') || str.startsWith('37'))) score += 30; // Amex length
+
+      if (!isPerfectLayout) {
+        if (chunkSizes.length == 4 && str.length == 16) score += 40;
+        if (chunkSizes.length == 3 && str.length == 15) score += 40;
+      }
+
+      candidates[str] = (candidates[str] ?? 0) + score;
+    }
+
+    // 1. Build candidates strictly from continuous contiguous chunk boundaries.
+    for (int startIdx = 0; startIdx < mappedChunks.length; startIdx++) {
+      var continuousStr = "";
+      var currentSizes = <int>[];
+      for (int endIdx = startIdx; endIdx < mappedChunks.length; endIdx++) {
+        continuousStr += mappedChunks[endIdx];
+        currentSizes.add(mappedChunks[endIdx].length);
+        addCandidate(continuousStr, List.from(currentSizes));
+        if (continuousStr.length > 16) break; // Overshoot bail
+      }
+    }
+
+    // 2. Fallback search (fused strings)
+    for (var chunk in mappedChunks) {
+      if (chunk.length >= 13) {
+        for (final len in [16, 15, 14, 13]) {
+          if (chunk.length < len) continue;
+          for (var i = 0; i <= chunk.length - len; i++) {
+            final sub = chunk.substring(i, i + len);
+            addCandidate(sub, [sub.length]);
+          }
+        }
+      }
+    }
+
+    if (candidates.isEmpty) return null;
+
+    var validCandidates = candidates.entries.where((e) {
+      if (enableLuhn) return luhnCheck(e.key);
+      return true;
+    }).toList();
+
+    if (validCandidates.isEmpty) return null;
+
+    validCandidates.sort((a, b) => b.value.compareTo(a.value));
+    return validCandidates.first.key;
   }
 
-  /// Network-centric validation.
-  static bool _isValidPrefix(List<Set<String>> slots) {
-    if (slots.length < 13 || slots.length > 16) return false;
-    final first = slots[0];
-    final second = slots[1];
+  /// Extracts the card number exhaustively via deep Cartesian combinations.
+  /// Strictly used for static gallery/image uploads where frame consensus is unavailable.
+  static String? extractCardNumberFromUpload(String rawText, {bool enableLuhn = false}) {
+    final lines = rawText.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
 
-    // Visa (4)
-    if (first.contains('4')) return true;
-    // MC (5, 2)
-    if (first.contains('5') || first.contains('2')) return true;
-    // Amex (34, 37) / Diners (30, 36, 38, 39)
-    if (first.contains('3')) {
-      if (slots.length == 15) return second.contains('4') || second.contains('7');
-      if (slots.length == 14) return second.any((c) => ['0', '6', '8', '9'].contains(c));
-      return true; // Probabilistic
+    final validChars = <String>{
+      ...List.generate(10, (i) => i.toString()),
+      ..._definiteDigits.keys,
+      ..._speculativeDigits.keys,
+      ..._ambiguous.keys,
+      '|',
+      '[',
+      ']',
+      '{',
+      '}'
+    };
+
+    final rawChunks = <String>[];
+    for (var line in lines) {
+      final words = line.split(RegExp(r'\s+'));
+      for (var word in words) {
+        var cleanWord = word;
+        while (cleanWord.isNotEmpty && !validChars.contains(cleanWord[0])) {
+          cleanWord = cleanWord.substring(1);
+        }
+        while (cleanWord.isNotEmpty && !validChars.contains(cleanWord[cleanWord.length - 1])) {
+          cleanWord = cleanWord.substring(0, cleanWord.length - 1);
+        }
+
+        if (cleanWord.length >= 1 && cleanWord.length <= 19) {
+          int origDigits = cleanWord.split('').where((c) => validChars.contains(c) && !['|', '[', ']', '{', '}'].contains(c)).length;
+          if (origDigits >= 1 || cleanWord.length > 13) {
+            rawChunks.add(cleanWord);
+          }
+        }
+      }
     }
-    // Discover/RuPay (6, 8)
-    if (first.contains('6') || first.contains('8')) return true;
 
+    final cleanedChunks = <String>[];
+    final edgeArtifacts = {'|', '1', 'l', 'I', 'i'};
+    final verticalEdgeEncodings = {'T', 'J', 't', 'j', '[', ']', '{', '}'};
+
+    bool enclosedLayout = rawChunks.any((c) => c.contains('|') || c.contains('[') || c.contains(']'));
+
+    for (var chunk in rawChunks) {
+      var c = chunk;
+      if (enclosedLayout) {
+        while (c.isNotEmpty && (verticalEdgeEncodings.contains(c[0]) || c[0] == '|')) {
+          c = c.substring(1);
+        }
+        while (c.isNotEmpty && (verticalEdgeEncodings.contains(c[c.length - 1]) || c[c.length - 1] == '|')) {
+          c = c.substring(0, c.length - 1);
+        }
+      }
+      if (c.length == 5) {
+        if (edgeArtifacts.contains(c[c.length - 1])) {
+          c = c.substring(0, 4);
+        } else if (edgeArtifacts.contains(c[0])) {
+          c = c.substring(1);
+        }
+      } else if (c.length == 6) {
+        if (edgeArtifacts.contains(c[0]) && edgeArtifacts.contains(c[c.length - 1])) {
+          c = c.substring(1, 5);
+        }
+      }
+      if (c.isNotEmpty) cleanedChunks.add(c);
+    }
+
+    // MAP CHUNKS VIA CARTESIAN DESTRUCTOR
+    List<List<String>> mappedPermutations = [];
+
+    for (var chunk in cleanedChunks) {
+      List<String> currentPerms = [''];
+      int trueDigits = 0;
+      bool hasUnmappable = false;
+
+      for (int i = 0; i < chunk.length; i++) {
+        var char = chunk[i];
+        List<String> nextPerms = [];
+        List<String> possibleValues = [];
+
+        if (char.codeUnitAt(0) >= 48 && char.codeUnitAt(0) <= 57) {
+          possibleValues.add(char);
+          trueDigits++;
+        } else if (_definiteDigits.containsKey(char)) {
+          possibleValues.add(_definiteDigits[char]!);
+        } else if (_ambiguous.containsKey(char)) {
+          possibleValues.addAll(_ambiguous[char]!); // Fork dimensions for B, L, etc.
+        } else if (_speculativeDigits.containsKey(char)) {
+          possibleValues.add(_speculativeDigits[char]!);
+        } else {
+          hasUnmappable = true;
+        }
+
+        for (var perm in currentPerms) {
+          for (var val in possibleValues) {
+            nextPerms.add(perm + val);
+          }
+        }
+        currentPerms = nextPerms; // Permutate forward!
+      }
+      
+      if (hasUnmappable) continue;
+      if (trueDigits == 0 && chunk.length < 4) continue;
+      
+      // Only retain chunks that actually produced digits
+      final finals = currentPerms.where((p) => p.isNotEmpty).toList();
+      if (finals.isNotEmpty) mappedPermutations.add(finals);
+    }
+
+    final candidates = <String, int>{};
+
+    void evalCandidate(String str, List<int> chunkSizes) {
+      if (str.length < 13 || str.length > 16) return;
+      if (!_isValidBIN(str) && !enableLuhn) return; // Strict gating for single frames
+
+      int score = 0;
+      if (_isValidBIN(str)) score += 50;
+
+      bool isPerfectLayout = false;
+      if (chunkSizes.length == 4 && chunkSizes[0] == 4 && chunkSizes[1] == 4 && chunkSizes[2] == 4 && chunkSizes[3] == 4) {
+        isPerfectLayout = true;
+        score += 2000; // Found standard layout! Massive points.
+      } else if (chunkSizes.length == 3 && chunkSizes[0] == 4 && chunkSizes[1] == 6 && chunkSizes[2] == 5) {
+        isPerfectLayout = true;
+        score += 2000;
+      }
+
+      if (luhnCheck(str)) {
+        score += enableLuhn ? 1000 : 1500; // Luhn is incredibly dominant on single frames
+      }
+
+      if (str.length == 16) score += 30;
+      if (str.length == 15 && (str.startsWith('34') || str.startsWith('37'))) score += 30;
+
+      if (!isPerfectLayout) {
+        if (chunkSizes.length == 4 && str.length == 16) score += 40;
+        if (chunkSizes.length == 3 && str.length == 15) score += 40;
+      }
+      candidates[str] = (candidates[str] ?? 0) + score;
+    }
+
+    for (int startIdx = 0; startIdx < mappedPermutations.length; startIdx++) {
+      // A record of strings mapped to their physical chunk layouts.
+      // E.g [ ("4025", [4]) ]
+      List<MapEntry<String, List<int>>> structuralCombos = [MapEntry("", [])];
+
+      for (int endIdx = startIdx; endIdx < mappedPermutations.length; endIdx++) {
+        List<MapEntry<String, List<int>>> nextCombos = [];
+        final segmentOptions = mappedPermutations[endIdx];
+
+        for (var existing in structuralCombos) {
+          // Protect against explosion (cards are never 20 digits long)
+          if (existing.key.length > 16) continue;
+
+          for (var opt in segmentOptions) {
+            final newList = List<int>.from(existing.value)..add(opt.length);
+            nextCombos.add(MapEntry(existing.key + opt, newList));
+          }
+        }
+        structuralCombos = nextCombos;
+
+        for (var seq in structuralCombos) {
+          evalCandidate(seq.key, seq.value);
+        }
+      }
+    }
+
+    // Fallback isolated chunk scanner (identical to camera flow)
+    for (var options in mappedPermutations) {
+      for (var chunk in options) {
+        if (chunk.length >= 13) {
+          for (final len in [16, 15, 14, 13]) {
+            if (chunk.length < len) continue;
+            for (var i = 0; i <= chunk.length - len; i++) {
+              final sub = chunk.substring(i, i + len);
+              evalCandidate(sub, [sub.length]);
+            }
+          }
+        }
+      }
+    }
+
+    if (candidates.isEmpty) return null;
+
+    var validCandidates = candidates.entries.where((e) {
+      if (enableLuhn) return luhnCheck(e.key);
+      return true;
+    }).toList();
+
+    if (validCandidates.isEmpty) return null;
+
+    validCandidates.sort((a, b) => b.value.compareTo(a.value));
+    return validCandidates.first.key;
+  }
+
+  static bool _isValidBIN(String str) {
+    if (str.isEmpty) return false;
+    final first = str[0];
+    if (first == '4') return true; // Visa
+    if (first == '5' || first == '2') return true; // MC
+    if (first == '3') return true; // Amex/Diners
+    if (first == '6' || first == '8') return true; // Discover/RuPay
     return false;
   }
 
-  /// Standard Luhn algorithm.
-  static bool checkLuhn(String number) {
-    if (number.length < 13) return false;
+  static bool luhnCheck(String str) {
+    if (str.length < 13) return false;
     int sum = 0;
     bool alternate = false;
-    for (int i = number.length - 1; i >= 0; i--) {
-      int? n = int.tryParse(number[i]);
-      if (n == null) return false;
+    for (int i = str.length - 1; i >= 0; i--) {
+      int n = int.parse(str[i]);
       if (alternate) {
         n *= 2;
-        if (n > 9) n -= 9;
+        if (n > 9) n = (n % 10) + 1;
       }
       sum += n;
       alternate = !alternate;
     }
     return (sum % 10 == 0);
-  }
-
-  static List<_Slot>? _matchPattern(String line, bool includeSpeculative) {
-    final d = _getDigitRegex(includeSpeculative);
-    // Patterns with spaces
-    final patterns = [
-      RegExp('($d{4})\\s+($d{4})\\s+($d{4})\\s+($d{4})'), // 4-4-4-4
-      RegExp('($d{4})\\s+($d{6})\\s+($d{5})'), // 4-6-5
-      RegExp('($d{4})\\s+($d{6})\\s+($d{4})'), // 4-6-4
-    ];
-
-    for (final p in patterns) {
-      final m = p.firstMatch(line);
-      if (m != null) {
-        final raw = List.generate(m.groupCount, (i) => m.group(i + 1)!).join();
-        final res = _toSlots(raw, includeSpeculative: includeSpeculative);
-        if (_isValidPrefix(res.map((s) => s.toSet()).toList())) return res;
-      }
-    }
-    return null;
-  }
-
-  static List<_Slot>? _matchLenient(String line, bool includeSpeculative) {
-    final slots = _toSlots(line, includeSpeculative: includeSpeculative);
-    for (final len in [16, 15, 14, 13]) {
-      if (slots.length < len) continue;
-      for (var i = 0; i <= slots.length - len; i++) {
-        final sub = slots.sublist(i, i + len);
-        if (_isValidPrefix(sub.map((s) => s.toSet()).toList())) return sub;
-      }
-    }
-    return null;
   }
 
   /// Find expiration date.
@@ -289,11 +503,4 @@ class ZapScanOCR {
     }
     return null;
   }
-}
-
-class _Slot {
-  final List<String> digits;
-  final bool isOriginalDigit;
-  _Slot(this.digits, this.isOriginalDigit);
-  Set<String> toSet() => digits.toSet();
 }
